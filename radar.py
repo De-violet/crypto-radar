@@ -172,13 +172,44 @@ def check_btc_trend():
     print(f"₿ BTC 4H: {open_price:.2f} → {close_price:.2f} ({pct:+.2f}%)")
     return change >= 0
 
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 🆕 BLOOMBERG TERMINAL EDITION — Multi-Timeframe Restu
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def check_daily_trend(symbol):
+    """Cek apakah harga close Daily terakhir BERADA DI ATAS EMA 50 Daily.
+    Return True jika bullish (close > EMA50 Daily), False jika tidak."""
+    klines_1d = get_klines(symbol, interval="1d", limit=50)
+    time.sleep(0.1)  # ⏳ Rate limit guard
+
+    if not klines_1d or not isinstance(klines_1d, list) or len(klines_1d) < 50:
+        print(f"  ⚠️ {symbol}: Data Daily tidak cukup untuk EMA 50, skip.")
+        return False
+
+    close_prices_daily = [float(c[4]) for c in klines_1d]
+    ema_50_daily = calculate_ema(close_prices_daily, period=50)
+
+    if ema_50_daily is None:
+        print(f"  ⚠️ {symbol}: EMA 50 Daily gagal dihitung, skip.")
+        return False
+
+    last_close_daily = close_prices_daily[-1]
+    is_bullish = last_close_daily > ema_50_daily
+
+    if not is_bullish:
+        print(f"  📉 {symbol}: Daily BEARISH (Close ${last_close_daily:.8g} < EMA50 ${ema_50_daily:.8g})")
+    else:
+        print(f"  📈 {symbol}: Daily BULLISH (Close ${last_close_daily:.8g} > EMA50 ${ema_50_daily:.8g})")
+
+    return is_bullish
+
 def scan_anomalies():
     # 🔒 GEMBOK BTC: Jangan scan altcoin jika BTC lagi turun
     if not check_btc_trend():
         print("🛑 BTC lagi turun, mode puasa aktif!")
         return
 
-    print("🎯 HEDGE FUND RADAR 4H AKTIF! Scanning...")
+    print("🌐 DE-VIOLET TERMINAL | BLOOMBERG EDITION — Scanning...")
     tickers = get_tickers_24hr()
 
     # 🛡️ SABUK PENGAMAN: Kalau Binance ngasih pesan error / bukan list
@@ -250,6 +281,16 @@ def scan_anomalies():
         if ema_200 is not None and close_price <= ema_200:
             continue
 
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        # 🆕 LOCAL HIGH BREAKOUT (Penghancur Atap)
+        # Ambil 30 candle terakhir yang sudah closed, cari highest_close.
+        # Koin HANYA lolos jika close_price candle 4H saat ini >= highest_close.
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        recent_30_closed = closed_candles[-30:] if len(closed_candles) >= 30 else closed_candles
+        highest_close = max(float(c[4]) for c in recent_30_closed)
+        if close_price < highest_close:
+            continue
+
         pct_change_4h = ((close_price - open_price) / open_price) * 100
 
         # 📊 Hitung rasio volume: volume candle 4H vs rata-rata volume per 4H
@@ -271,6 +312,13 @@ def scan_anomalies():
                     print(f"⏭️ SKIP {symbol} — sudah di-alert {int((now - last_alerted) / 60)} menit lalu.")
                     continue
 
+            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            # 🆕 MULTI-TIMEFRAME (1D Restu) — Daily EMA 50 Confirmation
+            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            if not check_daily_trend(symbol):
+                print(f"  🚫 {symbol}: Daily trend BEARISH, sinyal ditolak.")
+                continue
+
             # 🧱 ORDER BOOK IMBALANCE
             bid_ask_ratio = get_order_book_imbalance(symbol)
             time.sleep(0.1)  # ⏳ Rate limit guard
@@ -283,20 +331,30 @@ def scan_anomalies():
             rsi_display = f"{rsi_value:.2f}" if rsi_value is not None else "N/A"
             ema_display = f"{ema_200:.8g}" if ema_200 is not None else "N/A"
 
+            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            # 🆕 BLOOMBERG TERMINAL STYLE UI
+            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
             msg = (
-                f"🎯 <b>[HEDGE FUND RADAR] {symbol}</b>\n\n"
-                f"📈 Naik 4H: <b>+{pct_change_4h:.2f}%</b> | Vol: <b>{volume_ratio:.1f}x</b>\n"
-                f"🐋 Whale Index: <b>{trade_size_ratio:.1f}x</b> (Uang Besar Masuk)\n"
-                f"🧱 Order Book: Bids <b>{bid_ask_ratio:.1f}x</b> lebih tebal\n"
-                f"🎛️ RSI(14): <b>{rsi_display}</b>\n"
-                f"〽️ EMA(200): <b>${ema_display}</b>\n"
-                f"🎯 TP: <b>${tp_price:.8g}</b> (+30%) | 🛑 SL: <b>${sl_price:.8g}</b> (-10%)\n\n"
-                f"🛡️ <b>RISK PROTOCOL ($9 Strategy):</b>\n"
-                f"  • Entry: Buy Spot (No Leverage)\n"
-                f"  • Risk Amount: Full modal ($9) untuk 1 tembakan\n"
-                f"  • Psychology: Sabar, ini Swing! Jangan cek tiap menit."
+                f"🌐 <b>DE-VIOLET TERMINAL | ALPHA SIGNAL</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"💎 <b>ASSET:</b> {symbol}\n"
+                f"💵 <b>Price:</b> ${close_price:.8g}\n"
+                f"📈 <b>4H Surge:</b> +{pct_change_4h:.2f}% (Breakout 30-Candle High! 🚀)\n\n"
+                f"📊 <b>MACRO &amp; TREND METRICS</b>\n"
+                f"• 1D Trend (Daily): <b>BULLISH</b> (Above EMA 50)\n"
+                f"• 4H Trend (EMA200): <b>${ema_display}</b>\n"
+                f"• RSI (14): <b>{rsi_display}</b>\n\n"
+                f"🐋 <b>LIQUIDITY &amp; INSTITUTION</b>\n"
+                f"• Vol Spike: <b>{volume_ratio:.1f}x</b> vs Average\n"
+                f"• Whale Trade Size: <b>{trade_size_ratio:.1f}x</b>\n"
+                f"• OB Imbalance: Bids <b>{bid_ask_ratio:.1f}x</b> Thicker\n\n"
+                f"🎯 <b>EXECUTION PLAN ($9 RISK)</b>\n"
+                f"• 🟢 TP: <b>${tp_price:.8g}</b> (+30%)\n"
+                f"• 🔴 SL: <b>${sl_price:.8g}</b> (-10%)\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"<i>\"Patience pays. Execution matters.\"</i>"
             )
-            print(f"🎯 HIT: {symbol} +{pct_change_4h:.2f}% | Vol {volume_ratio:.1f}x | Whale {trade_size_ratio:.1f}x | OB {bid_ask_ratio:.1f}x | RSI {rsi_display} | EMA200 {ema_display}")
+            print(f"🎯 HIT: {symbol} +{pct_change_4h:.2f}% | Vol {volume_ratio:.1f}x | Whale {trade_size_ratio:.1f}x | OB {bid_ask_ratio:.1f}x | RSI {rsi_display} | EMA200 {ema_display} | 1D ✅ | 30H-Breakout ✅")
             send_telegram_message(msg, symbol=symbol)
 
             # 🧠 Update memori setelah berhasil kirim
@@ -305,7 +363,7 @@ def scan_anomalies():
             time.sleep(1)
 
     if found == 0:
-        print("😴 Tidak ada koin yang lolos semua filter Hedge Fund Grade.")
+        print("😴 Tidak ada koin yang lolos semua filter Bloomberg Terminal Grade.")
 
 if __name__ == "__main__":
     scan_anomalies()
