@@ -2,6 +2,8 @@ import requests
 import os
 import time
 import json
+import pandas as pd
+import pandas_ta as ta
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
@@ -54,6 +56,19 @@ BASE_URL = "https://data-api.binance.vision/api/v3"
 ALERTED_FILE = "alerted_coins.json"
 COOLDOWN_SECONDS = 7200  # 2 jam
 
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# KONFIGURASI BOUNCE REJECTION
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SUPPORT_LOOKBACK = 20       # Jumlah candle untuk menghitung Support
+SUPPORT_BUFFER = 0.01       # Buffer zone 1% — low cukup mendekati 1% dari support
+VOLUME_SPIKE_RATIO = 1.5    # Volume candle harus >= 1.5x rata-rata 20 candle sebelumnya
+
+# Stochastic Oscillator (5, 3, 3)
+STOCH_K_LENGTH = 5          # %K length
+STOCH_K_SMOOTH = 3          # %K smoothing
+STOCH_D_SMOOTH = 3          # %D smoothing
+STOCH_OVERSOLD = 20         # Batas area oversold
+
 def load_alerted_coins():
     """Baca file memori koin yang sudah pernah di-alert."""
     if os.path.exists(ALERTED_FILE):
@@ -93,123 +108,91 @@ def get_klines(symbol, interval="4h", limit=2):
         print(f"Error ambil klines {symbol}: {e}")
         return None
 
-def calculate_rsi(prices, period=14):
-    """Hitung RSI manual dari list harga close. Pure Python, tanpa pandas/numpy."""
-    if len(prices) < period + 1:
-        return None
+def calculate_support(candles, lookback=20):
+    """Hitung Support = harga terendah (low) dari N candle terakhir yang sudah closed.
 
-    gains = []
-    losses = []
-    for i in range(1, len(prices)):
-        delta = prices[i] - prices[i - 1]
-        if delta > 0:
-            gains.append(delta)
-            losses.append(0)
-        else:
-            gains.append(0)
-            losses.append(abs(delta))
+    Args:
+        candles: list candle yang sudah CLOSED (tanpa candle berjalan).
+        lookback: jumlah candle ke belakang untuk dihitung.
 
-    # Rata-rata gain & loss pertama (SMA)
-    avg_gain = sum(gains[:period]) / period
-    avg_loss = sum(losses[:period]) / period
+    Returns:
+        (support_price, support_index) atau (None, None) jika data tidak cukup.
+        support_index = posisi candle dengan harga terendah (0 = paling lama).
+    """
+    if len(candles) < lookback:
+        return None, None
 
-    # Smoothing (Wilder's EMA) untuk sisa data
-    for i in range(period, len(gains)):
-        avg_gain = (avg_gain * (period - 1) + gains[i]) / period
-        avg_loss = (avg_loss * (period - 1) + losses[i]) / period
+    recent = candles[-lookback:]
+    lows = [float(c[3]) for c in recent]  # index 3 = Low price
+    support = min(lows)
+    support_idx = lows.index(support)  # posisi dalam window lookback
 
-    if avg_loss == 0:
-        return 100.0  # Tidak ada loss sama sekali = RSI maksimal
+    return support, support_idx
 
-    rs = avg_gain / avg_loss
-    rsi = 100 - (100 / (1 + rs))
-    return rsi
 
-def calculate_ema(prices, period=200):
-    """Hitung EMA manual dari list harga close. Pure Python, tanpa pandas/numpy."""
-    if len(prices) < period:
-        return None
+def calculate_stochastic(candles):
+    """Hitung Stochastic Oscillator (5,3,3) dari list candle Binance menggunakan pandas_ta.
 
-    # Mulai dari SMA sebagai seed pertama
-    sma = sum(prices[:period]) / period
-    multiplier = 2 / (period + 1)
+    Args:
+        candles: list candle dari Binance API (sudah CLOSED).
 
-    ema = sma
-    for price in prices[period:]:
-        ema = (price - ema) * multiplier + ema
+    Returns:
+        (k_value, d_value) atau (None, None) jika data tidak cukup.
+    """
+    if len(candles) < STOCH_K_LENGTH + STOCH_K_SMOOTH + STOCH_D_SMOOTH:
+        return None, None
 
-    return ema
+    df = pd.DataFrame(candles, columns=[
+        "open_time", "open", "high", "low", "close",
+        "volume", "close_time", "quote_volume",
+        "trades", "taker_buy_base", "taker_buy_quote", "ignore"
+    ])
+    df["high"] = df["high"].astype(float)
+    df["low"] = df["low"].astype(float)
+    df["close"] = df["close"].astype(float)
 
-def get_order_book_imbalance(symbol):
-    """Cek kedalaman order book. Return rasio total Bids / total Asks (dalam USDT)."""
-    try:
-        url = f"{BASE_URL}/depth"
-        params = {"symbol": symbol, "limit": 100}
-        response = requests.get(url, params=params)
-        data = response.json()
+    stoch = ta.stoch(
+        high=df["high"],
+        low=df["low"],
+        close=df["close"],
+        k=STOCH_K_LENGTH,
+        d=STOCH_D_SMOOTH,
+        smooth_k=STOCH_K_SMOOTH
+    )
 
-        total_bids = sum(float(bid[0]) * float(bid[1]) for bid in data.get("bids", []))
-        total_asks = sum(float(ask[0]) * float(ask[1]) for ask in data.get("asks", []))
+    if stoch is None or stoch.empty:
+        return None, None
 
-        if total_asks == 0:
-            return 0
-        return total_bids / total_asks
-    except Exception as e:
-        print(f"Error ambil order book {symbol}: {e}")
-        return 0
+    # pandas_ta returns columns: STOCHk_5_3_3 and STOCHd_5_3_3
+    k_col = stoch.columns[0]  # STOCHk
+    d_col = stoch.columns[1]  # STOCHd
 
-def check_btc_trend():
-    """Cek apakah BTC sedang naik di candle 4H terakhir. Return False jika turun."""
-    klines = get_klines("BTCUSDT", interval="4h", limit=2)
-    if not klines or not isinstance(klines, list) or len(klines) < 2:
-        print("⚠️ Gagal cek tren BTC, skip scan untuk safety.")
-        return False
-    last_candle = klines[-2]
-    open_price = float(last_candle[1])
-    close_price = float(last_candle[4])
-    change = close_price - open_price
-    pct = ((change) / open_price) * 100 if open_price > 0 else 0
-    print(f"₿ BTC 4H: {open_price:.2f} → {close_price:.2f} ({pct:+.2f}%)")
-    return change >= 0
+    k_value = stoch[k_col].iloc[-1]
+    d_value = stoch[d_col].iloc[-1]
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 🆕 BLOOMBERG TERMINAL EDITION — Multi-Timeframe Restu
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    if pd.isna(k_value) or pd.isna(d_value):
+        return None, None
 
-def check_daily_trend(symbol):
-    """Cek apakah harga close Daily terakhir BERADA DI ATAS EMA 50 Daily.
-    Return True jika bullish (close > EMA50 Daily), False jika tidak."""
-    klines_1d = get_klines(symbol, interval="1d", limit=50)
-    time.sleep(0.1)  # ⏳ Rate limit guard
+    return float(k_value), float(d_value)
 
-    if not klines_1d or not isinstance(klines_1d, list) or len(klines_1d) < 50:
-        print(f"  ⚠️ {symbol}: Data Daily tidak cukup untuk EMA 50, skip.")
-        return False
 
-    close_prices_daily = [float(c[4]) for c in klines_1d]
-    ema_50_daily = calculate_ema(close_prices_daily, period=50)
+def scan_bounce_rejection():
+    """Scan semua koin USDT di Binance.
+    Kirim alert jika terdeteksi BOUNCE / REJECTION di area Support.
 
-    if ema_50_daily is None:
-        print(f"  ⚠️ {symbol}: EMA 50 Daily gagal dihitung, skip.")
-        return False
+    Syarat trigger (harus lolos SEMUA):
+    1. Pinbar Rejection: low menyentuh/tembus support, TAPI close mantul di atas support.
+    2. Buffer Zone: low cukup masuk zona 1% di atas support (low <= support * 1.01).
+    3. Volume Spike: volume candle >= 1.5x rata-rata volume 20 candle sebelumnya.
+    4. Stochastic Oversold: %K <= 20 (oversold) DAN %K > %D (golden cross / momentum naik).
+    """
 
-    last_close_daily = close_prices_daily[-1]
-    is_bullish = last_close_daily > ema_50_daily
+    print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    print("🛡️  BOUNCE RADAR — Support Rejection Detector")
+    print(f"📐 Support = Lowest Low dari {SUPPORT_LOOKBACK} candle 4H")
+    print(f"🎯 Buffer = {SUPPORT_BUFFER * 100:.0f}% | Vol Spike = {VOLUME_SPIKE_RATIO}x | Stoch({STOCH_K_LENGTH},{STOCH_K_SMOOTH},{STOCH_D_SMOOTH}) ≤ {STOCH_OVERSOLD}")
+    print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
-    if not is_bullish:
-        print(f"  📉 {symbol}: Daily BEARISH (Close ${last_close_daily:.8g} < EMA50 ${ema_50_daily:.8g})")
-    else:
-        print(f"  📈 {symbol}: Daily BULLISH (Close ${last_close_daily:.8g} > EMA50 ${ema_50_daily:.8g})")
-
-    return is_bullish
-
-def scan_anomalies():
-    # 🔒 GEMBOK BTC: Jangan scan altcoin jika BTC lagi turun
-    if not check_btc_trend():
-        print("🛑 BTC lagi turun, mode puasa aktif!")
-        return
-
-    print("🌐 DE-VIOLET TERMINAL | BLOOMBERG EDITION — Scanning...")
     tickers = get_tickers_24hr()
 
     # 🛡️ SABUK PENGAMAN: Kalau Binance ngasih pesan error / bukan list
@@ -220,150 +203,180 @@ def scan_anomalies():
         print("❌ Gagal dapat data dari Binance.")
         return
 
-    # Step 1: Filter koin USDT dengan volume > 1 juta + simpan count untuk whale detector
+    # Step 1: Filter koin USDT dengan volume > 1 juta
     candidates = []
     for ticker in tickers:
         if isinstance(ticker, dict) and 'symbol' in ticker:
             symbol = ticker['symbol']
             if symbol.endswith("USDT"):
                 volume_24h = float(ticker['quoteVolume'])
-                trade_count_24h = int(ticker.get('count', 0))
                 if volume_24h > 1000000:
                     candidates.append({
                         "symbol": symbol,
-                        "volume_24h": volume_24h,
-                        "trade_count_24h": trade_count_24h
+                        "volume_24h": volume_24h
                     })
 
-    print(f"📊 {len(candidates)} koin USDT lolos filter volume.")
+    print(f"📊 {len(candidates)} koin USDT lolos filter volume (>$1M).\n")
 
     # 🧠 Load memori koin yang sudah pernah di-alert
     alerted_coins = load_alerted_coins()
 
-    # Step 2: Cek candle 4H terakhir satu per satu
+    # Step 2: Cek setiap koin — apakah ada bounce / rejection di Support?
     found = 0
     for coin in candidates:
         symbol = coin["symbol"]
         volume_24h = coin["volume_24h"]
-        trade_count_24h = coin["trade_count_24h"]
 
-        klines = get_klines(symbol, limit=250)
+        # Ambil 50 candle: cukup untuk support (20) + Stoch warmup + 1 berjalan
+        klines = get_klines(symbol, interval="4h", limit=50)
         time.sleep(0.1)  # ⏳ Rate limit guard
 
-        if not klines or not isinstance(klines, list) or len(klines) < 2:
+        if not klines or not isinstance(klines, list) or len(klines) < SUPPORT_LOOKBACK + 2 + STOCH_K_LENGTH:
             continue
 
-        # Candle terakhir yang sudah CLOSED = index [-2] (index [-1] masih berjalan)
-        last_candle = klines[-2]
-        open_price = float(last_candle[1])
-        high_price = float(last_candle[2])
-        low_price = float(last_candle[3])
-        close_price = float(last_candle[4])
-        candle_volume = float(last_candle[7])  # 💰 Quote Asset Volume / USDT (index 7)
-        num_trades = int(last_candle[8])       # 🐋 Number of Trades (index 8)
+        # Pisahkan candle yang sudah closed (buang candle terakhir yang masih berjalan)
+        closed_candles = klines[:-1]
+
+        # Candle closed terakhir = yang baru saja selesai (candle sinyal)
+        last_closed = closed_candles[-1]
+        close_price = float(last_closed[4])
+        open_price = float(last_closed[1])
+        high_price = float(last_closed[2])
+        low_price = float(last_closed[3])
+        candle_volume = float(last_closed[7])  # Quote Asset Volume (USDT)
 
         if open_price == 0:
             continue
 
-        # 🕯️ WICK FILTER (Anti-Pucuk): tolak candle dengan jarum atas > 50%
-        upper_wick = high_price - max(open_price, close_price)
-        total_length = high_price - low_price
-        if total_length > 0 and (upper_wick / total_length) > 0.5:
+        # 📐 Hitung Support dari 20 candle SEBELUM candle sinyal
+        support_candles = closed_candles[:-1]  # semua closed kecuali candle sinyal
+        support, support_idx = calculate_support(support_candles, lookback=SUPPORT_LOOKBACK)
+
+        if support is None:
             continue
 
-        # 📈 Hitung indikator teknikal dari semua candle closed
-        closed_candles = klines[:-1]  # Buang candle terakhir yang masih berjalan
-        close_prices = [float(c[4]) for c in closed_candles]
-        rsi_value = calculate_rsi(close_prices, period=14)
-        ema_200 = calculate_ema(close_prices, period=200)
-
-        # 〽️ EMA 200 FILTER: hanya ambil koin yang harga di atas tren jangka panjang
-        if ema_200 is not None and close_price <= ema_200:
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        # 🎯 SYARAT 1 — PINBAR REJECTION
+        # Low harus menyentuh atau menembus support,
+        # TAPI close harus mantul dan tutup DI ATAS support.
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        if close_price <= support:
+            # Close tidak mantul, masih di bawah/sama dengan support → bukan bounce
             continue
 
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        # 🆕 LOCAL HIGH BREAKOUT (Penghancur Atap)
-        # Ambil 30 candle terakhir yang sudah closed, cari highest_close.
-        # Koin HANYA lolos jika close_price candle 4H saat ini >= highest_close.
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        recent_30_closed = closed_candles[-30:] if len(closed_candles) >= 30 else closed_candles
-        highest_close = max(float(c[4]) for c in recent_30_closed)
-        if close_price < highest_close:
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        # 🎯 SYARAT 2 — BUFFER ZONE (toleransi 1%)
+        # Low harus masuk ke zona support:
+        #   low <= support * (1 + buffer)
+        # Artinya low cukup turun hingga 1% mendekati support.
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        support_zone = support * (1 + SUPPORT_BUFFER)
+        if low_price > support_zone:
+            # Low terlalu jauh dari support, tidak menyentuh zona
             continue
+
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        # 🎯 SYARAT 3 — VOLUME SPIKE
+        # Volume candle sinyal harus >= 1.5x rata-rata volume
+        # dari 20 candle sebelumnya (support_candles).
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        volumes_20 = [float(c[7]) for c in support_candles[-SUPPORT_LOOKBACK:]]
+        avg_volume_20 = sum(volumes_20) / len(volumes_20) if volumes_20 else 0
+        volume_ratio = candle_volume / avg_volume_20 if avg_volume_20 > 0 else 0
+
+        if volume_ratio < VOLUME_SPIKE_RATIO:
+            # Volume terlalu kecil, bukan bounce yang meyakinkan
+            continue
+
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        # 🎯 SYARAT 4 — STOCHASTIC OVERSOLD + GOLDEN CROSS
+        # %K harus <= 20 (area oversold)
+        # %K harus > %D (momentum sedang naik / golden cross)
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        stoch_k, stoch_d = calculate_stochastic(closed_candles)
+
+        if stoch_k is None or stoch_d is None:
+            continue
+
+        if stoch_k > STOCH_OVERSOLD:
+            # %K tidak di area oversold
+            continue
+
+        if stoch_k <= stoch_d:
+            # %K masih di bawah %D, belum ada golden cross
+            continue
+
+        # ✅ SEMUA 4 SYARAT LOLOS — Bounce + Momentum Confirmed!
 
         pct_change_4h = ((close_price - open_price) / open_price) * 100
+        pct_bounce = ((close_price - support) / support) * 100  # seberapa tinggi mantul dari support
+        pct_low_from_support = ((low_price - support) / support) * 100  # seberapa dalam low menyentuh
 
-        # 📊 Hitung rasio volume: volume candle 4H vs rata-rata volume per 4H
-        avg_volume_4h = volume_24h / 6  # 6 candle 4H dalam 24 jam
-        volume_ratio = candle_volume / avg_volume_4h if avg_volume_4h > 0 else 0
+        # 💰 Kalkulator Risk:Reward 1:2
+        stop_loss_price = low_price * 0.995       # SL = 0.5% di bawah ekor candle
+        risk = close_price - stop_loss_price       # Jarak risiko
+        target_profit_price = close_price + (risk * 2)  # TP = close + 2x risk (R:R 1:2)
+        pct_sl = ((stop_loss_price - close_price) / close_price) * 100
+        pct_tp = ((target_profit_price - close_price) / close_price) * 100
 
-        # 🐋 WHALE DETECTOR: rata-rata ukuran transaksi candle vs rata-rata harian
-        avg_trade_size_candle = candle_volume / num_trades if num_trades > 0 else 0
-        avg_trade_size_24h = volume_24h / trade_count_24h if trade_count_24h > 0 else 0
-        trade_size_ratio = avg_trade_size_candle / avg_trade_size_24h if avg_trade_size_24h > 0 else 0
-
-        # 🎯 Syarat Swing: naik >= 5% DAN volume 1.5x DAN whale 1.5x
-        if pct_change_4h >= 5.0 and volume_ratio >= 1.5 and trade_size_ratio >= 1.5:
-            # 🧠 Cek memori: sudah pernah dikirim dalam 2 jam terakhir?
-            now = time.time()
-            if symbol in alerted_coins:
-                last_alerted = alerted_coins[symbol]
-                if now - last_alerted < COOLDOWN_SECONDS:
-                    print(f"⏭️ SKIP {symbol} — sudah di-alert {int((now - last_alerted) / 60)} menit lalu.")
-                    continue
-
-            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            # 🆕 MULTI-TIMEFRAME (1D Restu) — Daily EMA 50 Confirmation
-            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            if not check_daily_trend(symbol):
-                print(f"  🚫 {symbol}: Daily trend BEARISH, sinyal ditolak.")
+        # 🧠 Cek memori: sudah pernah dikirim dalam 2 jam terakhir?
+        now = time.time()
+        if symbol in alerted_coins:
+            last_alerted = alerted_coins[symbol]
+            if now - last_alerted < COOLDOWN_SECONDS:
+                mins_ago = int((now - last_alerted) / 60)
+                print(f"⏭️  SKIP {symbol} — sudah di-alert {mins_ago} menit lalu.")
                 continue
 
-            # 🧱 ORDER BOOK IMBALANCE
-            bid_ask_ratio = get_order_book_imbalance(symbol)
-            time.sleep(0.1)  # ⏳ Rate limit guard
+        found += 1
 
-            found += 1
+        # 📊 Format pesan Telegram
+        bounce_emoji = "🟢" if low_price <= support else "🟡"
+        pierce_status = "TEMBUS & MANTUL" if low_price <= support else "SENTUH ZONA & MANTUL"
 
-            # 💰 Hitung Target Profit & Stop Loss
-            tp_price = close_price * 1.30  # +30%
-            sl_price = close_price * 0.90  # -10%
-            rsi_display = f"{rsi_value:.2f}" if rsi_value is not None else "N/A"
-            ema_display = f"{ema_200:.8g}" if ema_200 is not None else "N/A"
+        msg = (
+            f"🛡️ <b>BOUNCE RADAR — REJECTION ALERT</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"💎 <b>ASSET:</b> {symbol}\n\n"
+            f"📊 <b>PRICE ACTION</b>\n"
+            f"• Low: <b>${low_price:.8g}</b>\n"
+            f"• Close: <b>${close_price:.8g}</b>\n"
+            f"• Support: <b>${support:.8g}</b>\n"
+            f"• Buffer Zone: <b>${support_zone:.8g}</b> (+{SUPPORT_BUFFER * 100:.0f}%)\n\n"
+            f"🎯 <b>RISK:REWARD 1:2</b>\n"
+            f"• 🔴 SL: <b>${stop_loss_price:.8g}</b> ({pct_sl:+.2f}%)\n"
+            f"• 🟢 TP: <b>${target_profit_price:.8g}</b> (+{pct_tp:.2f}%)\n"
+            f"• 📏 Risk: <b>${risk:.8g}</b>\n\n"
+            f"{bounce_emoji} <b>STATUS:</b> {pierce_status}\n"
+            f"📏 <b>Low → Support:</b> {pct_low_from_support:+.2f}%\n"
+            f"📈 <b>Bounce dari Support:</b> +{pct_bounce:.2f}%\n"
+            f"🕯️ <b>Candle 4H:</b> {pct_change_4h:+.2f}%\n\n"
+            f"〽️ <b>STOCHASTIC ({STOCH_K_LENGTH},{STOCH_K_SMOOTH},{STOCH_D_SMOOTH})</b>\n"
+            f"• %K: <b>{stoch_k:.2f}</b>\n"
+            f"• %D: <b>{stoch_d:.2f}</b>\n"
+            f"• Status: <b>OVERSOLD + GOLDEN CROSS</b> ✅\n\n"
+            f"🔊 <b>VOLUME CONFIRMATION</b>\n"
+            f"• Candle Vol: <b>${candle_volume:,.0f}</b>\n"
+            f"• Avg 20 Vol: <b>${avg_volume_20:,.0f}</b>\n"
+            f"• Spike: <b>{volume_ratio:.1f}x</b> ✅\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"<i>\"Bounce + momentum confirmed di area oversold.\"</i>"
+        )
 
-            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            # 🆕 BLOOMBERG TERMINAL STYLE UI
-            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            msg = (
-                f"🌐 <b>DE-VIOLET TERMINAL | ALPHA SIGNAL</b>\n"
-                f"━━━━━━━━━━━━━━━━━━━━\n"
-                f"💎 <b>ASSET:</b> {symbol}\n"
-                f"💵 <b>Price:</b> ${close_price:.8g}\n"
-                f"📈 <b>4H Surge:</b> +{pct_change_4h:.2f}% (Breakout 30-Candle High! 🚀)\n\n"
-                f"📊 <b>MACRO &amp; TREND METRICS</b>\n"
-                f"• 1D Trend (Daily): <b>BULLISH</b> (Above EMA 50)\n"
-                f"• 4H Trend (EMA200): <b>${ema_display}</b>\n"
-                f"• RSI (14): <b>{rsi_display}</b>\n\n"
-                f"🐋 <b>LIQUIDITY &amp; INSTITUTION</b>\n"
-                f"• Vol Spike: <b>{volume_ratio:.1f}x</b> vs Average\n"
-                f"• Whale Trade Size: <b>{trade_size_ratio:.1f}x</b>\n"
-                f"• OB Imbalance: Bids <b>{bid_ask_ratio:.1f}x</b> Thicker\n\n"
-                f"🎯 <b>EXECUTION PLAN ($9 RISK)</b>\n"
-                f"• 🟢 TP: <b>${tp_price:.8g}</b> (+30%)\n"
-                f"• 🔴 SL: <b>${sl_price:.8g}</b> (-10%)\n"
-                f"━━━━━━━━━━━━━━━━━━━━\n"
-                f"<i>\"Patience pays. Execution matters.\"</i>"
-            )
-            print(f"🎯 HIT: {symbol} +{pct_change_4h:.2f}% | Vol {volume_ratio:.1f}x | Whale {trade_size_ratio:.1f}x | OB {bid_ask_ratio:.1f}x | RSI {rsi_display} | EMA200 {ema_display} | 1D ✅ | 30H-Breakout ✅")
-            send_telegram_message(msg, symbol=symbol)
+        print(f"🎯 BOUNCE: {symbol} | Low ${low_price:.8g} → Close ${close_price:.8g} | Support ${support:.8g} | Vol {volume_ratio:.1f}x | %K {stoch_k:.2f} > %D {stoch_d:.2f}")
+        send_telegram_message(msg, symbol=symbol)
 
-            # 🧠 Update memori setelah berhasil kirim
-            alerted_coins[symbol] = now
-            save_alerted_coins(alerted_coins)
-            time.sleep(1)
+        # 🧠 Update memori setelah berhasil kirim
+        alerted_coins[symbol] = now
+        save_alerted_coins(alerted_coins)
+        time.sleep(1)
 
+    print(f"\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
     if found == 0:
-        print("😴 Tidak ada koin yang lolos semua filter Bloomberg Terminal Grade.")
+        print("😴 Tidak ada koin yang bounce di Support saat ini.")
+    else:
+        print(f"✅ {found} koin terdeteksi BOUNCE / REJECTION di Support.")
+    print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
 if __name__ == "__main__":
-    scan_anomalies()
+    scan_bounce_rejection()
