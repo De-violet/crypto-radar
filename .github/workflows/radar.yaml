@@ -2,9 +2,8 @@ name: Crypto Radar Bot
 
 on:
   schedule:
-    # Berjalan otomatis setiap 4 jam sekali
     - cron: '0 */4 * * *'
-  workflow_dispatch: # Memunculkan tombol "Run workflow" untuk tes manual
+  workflow_dispatch:
 
 jobs:
   scan:
@@ -17,13 +16,12 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.12' 
 
       - name: Install Modul
         run: |
           python -m pip install --upgrade pip
-          pip install requests pandas==2.2.2
-          pip install https://github.com/twopirllc/pandas-ta/archive/master.zip
+          pip install requests pandas pandas-ta
 
       - name: Jalankan Radar
         env:
