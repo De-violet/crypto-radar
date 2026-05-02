@@ -1,0 +1,60 @@
+name: Crypto Radar v4 — Multi-Timeframe Sniper
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'  # Setiap 15 menit
+  workflow_dispatch:         # Manual trigger untuk testing
+
+permissions:
+  contents: write
+
+jobs:
+  scan:
+    name: 🎯 Sniper Scanner
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── Step 1: Checkout Repository ──────────────────
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v4
+
+      # ── Step 2: Setup Python ─────────────────────────
+      - name: 🐍 Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      # ── Step 3: Install Dependencies ─────────────────
+      - name: 📦 Install Dependencies
+        run: |
+          pip install --upgrade pip
+          pip install requests pandas pandas-ta
+
+      # ── Step 4: Run Radar Scanner ────────────────────
+      - name: 🎯 Run Multi-Timeframe Sniper
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python radar.py
+
+      # ── Step 5: Smart Git Auto-Commit (Memory) ──────
+      - name: 💾 Smart Commit — Update Memory
+        run: |
+          if [ -f alerted_coins.json ]; then
+            git add alerted_coins.json
+
+            if git diff --cached --quiet alerted_coins.json 2>/dev/null; then
+              echo "✅ Tidak ada perubahan memory. Skip commit."
+            else
+              echo "📡 Perubahan memory terdeteksi. Committing..."
+              git config user.name "github-actions[bot]"
+              git config user.email "github-actions[bot]@users.noreply.github.com"
+              git pull --rebase origin main || true
+              git commit -m "🧠 Update memory — $(date -u +'%Y-%m-%d %H:%M UTC')"
+              git push
+              echo "✅ Memory berhasil di-push ke repository."
+            fi
+          else
+            echo "ℹ️ alerted_coins.json belum ada. Skip."
+          fi
