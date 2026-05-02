@@ -23,7 +23,7 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
 COINS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"]
 
-BINANCE_BASE = "https://api.binance.com"
+BINANCE_BASE = "https://data-api.binance.vision"
 KLINES_ENDPOINT = "/api/v3/klines"
 
 MEMORY_FILE = "alerted_coins.json"
