@@ -29,7 +29,7 @@ jobs:
       - name: 📦 Install Dependencies
         run: |
           pip install --upgrade pip
-          pip install requests pandas pandas-ta
+          pip install requests pandas pandas-ta mplfinance matplotlib
 
       # ── Step 4: Run Radar Scanner ────────────────────
       - name: 🎯 Run Multi-Timeframe Sniper

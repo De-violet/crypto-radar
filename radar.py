@@ -1,14 +1,16 @@
 """
-CRYPTO RADAR v4.0 — Multi-Timeframe Sniper Edition
-Filter Bertingkat: 1D -> 4H -> 1H -> 5m (Top-Down Analysis)
-Anti-Spam Memory  |  Risk:Reward 1:2  |  Inline Keyboard
+CRYPTO RADAR v5.0 — Dynamic Reversal Sniper
+Filter Bertingkat: 4H -> 1H -> 5m (Bottom Fishing)
+Anti-Spam Memory  |  Risk:Reward 1:2  |  Inline Keyboard | Auto Chart
 """
 
+import io
 import json
 import os
 import time
 from datetime import datetime, timezone
 
+import mplfinance as mpf
 import pandas as pd
 import pandas_ta as ta
 import requests
@@ -21,9 +23,13 @@ from urllib3.util.retry import Retry
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
+<<<<<<< HEAD
 COINS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"]
 
 BINANCE_BASE = "https://data-api.binance.vision"
+=======
+BINANCE_BASE = "https://api.binance.com"
+>>>>>>> 4c44f24 (add feat: revamp sniper logic to dynamic reversal and add Telegram chart alerts)
 KLINES_ENDPOINT = "/api/v3/klines"
 
 MEMORY_FILE = "alerted_coins.json"
@@ -55,6 +61,43 @@ def _build_session():
 
 
 _session = _build_session()
+
+
+# ══════════════════════════════════════════════
+# DYNAMIC COIN SCANNER
+# ══════════════════════════════════════════════
+def get_top_volume_coins(limit=30):
+    """
+    Ambil daftar top koin USDT-Margined berdasarkan 24h quote volume.
+    Abaikan stablecoins.
+    """
+    url = f"{BINANCE_BASE}/api/v3/ticker/24hr"
+    try:
+        resp = _session.get(url, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        print(f"  [ERROR] Gagal fetch 24hr ticker: {e}")
+        return []
+
+    # Filter out stablecoins
+    stablecoins = {
+        "USDCUSDT", "FDUSDUSDT", "TUSDUSDT", "BUSDUSDT", 
+        "DAIUSDT", "USDPUSDT", "EURUSDT", "AEURUSDT", "USTCUSDT"
+    }
+    
+    valid_coins = []
+    for item in data:
+        symbol = item['symbol']
+        if symbol.endswith("USDT") and symbol not in stablecoins:
+            valid_coins.append({
+                "symbol": symbol,
+                "quoteVolume": float(item['quoteVolume'])
+            })
+            
+    # Urutkan berdasarkan quoteVolume tertinggi
+    valid_coins.sort(key=lambda x: x["quoteVolume"], reverse=True)
+    return [c["symbol"] for c in valid_coins[:limit]]
 
 
 # ══════════════════════════════════════════════
@@ -101,43 +144,35 @@ def fetch_klines(symbol, interval, limit=100):
 
 
 # ══════════════════════════════════════════════
-# FILTER 1 — DAILY (1D): Trend Bullish?
-# Syarat: Close > EMA 50
+# CHART GENERATOR
 # ══════════════════════════════════════════════
-def check_daily_trend(symbol):
+def generate_chart(symbol, df):
     """
-    Cek apakah tren harian Bullish.
-    PASS jika Close > EMA 50.
+    Generate 5m candlestick chart and return as BytesIO.
+    df should have datetime index and OHLC columns.
     """
-    df = fetch_klines(symbol, "1d", limit=60)
-    if df.empty:
-        return {"pass": False, "reason": "Data fetch failed"}
-
-    df["ema50"] = ta.ema(df["close"], length=50)
-
-    last = df.iloc[-1]
-    close = last["close"]
-    ema50 = last["ema50"]
-
-    if pd.isna(ema50):
-        return {"pass": False, "reason": "EMA50 belum terbentuk"}
-
-    is_bullish = close > ema50
-    pct_above = ((close - ema50) / ema50) * 100
-
-    arrow = ">" if is_bullish else "<"
-    return {
-        "pass": is_bullish,
-        "close": round(close, 2),
-        "ema50": round(ema50, 2),
-        "pct_above": round(pct_above, 2),
-        "status": "BULLISH" if is_bullish else "BEARISH",
-        "detail": f"Close {arrow} EMA50 ({pct_above:+.2f}%)",
-    }
+    # Create a copy and set datetime index for mplfinance
+    df_chart = df.copy()
+    df_chart.set_index("open_time", inplace=True)
+    
+    buf = io.BytesIO()
+    
+    # Customize the style
+    mc = mpf.make_marketcolors(up='g', down='r', edge='inherit', wick='inherit', volume='in', ohlc='i')
+    s  = mpf.make_mpf_style(marketcolors=mc, gridstyle=':', y_on_right=False)
+    
+    # Plot to buffer
+    title = f"\n{symbol} 5m Rejection"
+    mpf.plot(df_chart, type='candle', style=s, title=title, 
+             volume=False, savefig=dict(fname=buf, dpi=100, bbox_inches='tight'),
+             figsize=(6, 4))
+    
+    buf.seek(0)
+    return buf
 
 
 # ══════════════════════════════════════════════
-# FILTER 2 — 4H: Support Bounce + Volume Spike
+# FILTER 1 — 4H: Support Bounce + Volume Spike
 # Syarat: (1) Low masuk zona buffer support
 #         (2) Close > Open (bounce/memantul)
 #         (3) Volume >= 1.5x rata-rata 20 candle
@@ -169,7 +204,7 @@ def check_4h_support_volume(symbol):
 
     avg_vol_20 = recent_20["volume"].mean()
     vol_ratio = current_vol / avg_vol_20 if avg_vol_20 > 0 else 0
-    has_volume_spike = vol_ratio >= 1.5
+    has_volume_spike = vol_ratio >= 1.2
 
     distance_pct = ((current_low - support_level) / support_level) * 100
 
@@ -199,14 +234,14 @@ def check_4h_support_volume(symbol):
 
 
 # ══════════════════════════════════════════════
-# FILTER 3 — 1H: Stochastic Oversold + Golden Cross
-# Syarat: %K <= 20 (Oversold) DAN %K > %D (Golden Cross)
+# FILTER 2 — 1H: Stochastic Oversold
+# Syarat: %K <= 20 (Oversold)
 # Stochastic parameter: (5, 3, 3)
 # ══════════════════════════════════════════════
 def check_1h_stochastic(symbol):
     """
     Cek Stochastic (5,3,3) di TF 1H.
-    PASS jika K <= 20 (oversold) DAN K > D (golden cross / momentum naik).
+    PASS jika K <= 20 (oversold).
     """
     df = fetch_klines(symbol, "1h", limit=50)
     if df.empty:
@@ -226,33 +261,26 @@ def check_1h_stochastic(symbol):
         return {"pass": False, "reason": "Stochastic NaN"}
 
     is_oversold = k_val <= 20
-    is_golden_cross = k_val > d_val
-    all_pass = is_oversold and is_golden_cross
-
+    
     os_icon = "[Y]" if is_oversold else "[N]"
-    gc_icon = "[Y]" if is_golden_cross else "[N]"
 
-    if all_pass:
-        status = "OVERSOLD + GOLDEN CROSS"
-    elif is_oversold:
-        status = "OVERSOLD (no cross yet)"
+    if is_oversold:
+        status = "OVERSOLD"
     else:
         status = "NOT OVERSOLD"
 
-    cross_arrow = ">" if is_golden_cross else "<"
     return {
-        "pass": all_pass,
+        "pass": is_oversold,
         "k": round(k_val, 2),
         "d": round(d_val, 2),
         "is_oversold": is_oversold,
-        "is_golden_cross": is_golden_cross,
         "status": status,
-        "detail": f"{os_icon} K={k_val:.1f} (<=20)  {gc_icon} K{cross_arrow}D",
+        "detail": f"{os_icon} K={k_val:.1f} (<=20)",
     }
 
 
 # ══════════════════════════════════════════════
-# FILTER 4 — 5m: Bullish Pinbar Sniper Entry
+# FILTER 3 — 5m: Bullish Pinbar Sniper Entry
 # Syarat: (1) Close > Open (bullish candle)
 #         (2) Lower wick >= 2x body
 # ══════════════════════════════════════════════
@@ -262,22 +290,25 @@ def check_5m_pinbar(symbol):
     Bullish Pinbar = Close > Open DAN lower wick >= 2x body.
     Menggunakan candle [-2] (last closed) bukan [-1] (still forming).
     """
-    df = fetch_klines(symbol, "5m", limit=10)
+    # Load enough data for the chart, e.g. 25 candles
+    df = fetch_klines(symbol, "5m", limit=25)
     if df.empty:
-        return {"pass": False, "reason": "Data fetch failed"}
+        return {"pass": False, "reason": "Data fetch failed", "df": None}
 
     candle = df.iloc[-2]
     o, h, l, c = candle["open"], candle["high"], candle["low"], candle["close"]
 
     body = abs(c - o)
-    lower_wick = min(o, c) - l
-    upper_wick = h - max(o, c)
+    # Gunakan max(0, ...) untuk menghindari nilai negatif jika terjadi anomali data (misal: open < low)
+    lower_wick = max(0, min(o, c) - l)
+    upper_wick = max(0, h - max(o, c))
 
     body_ref = max(body, 0.0001)
     wick_ratio = lower_wick / body_ref
 
     is_bullish = c > o
-    has_long_tail = lower_wick >= (2 * body_ref)
+    # Ubah syarat tail dari 2x menjadi 1.5x body
+    has_long_tail = lower_wick >= (1.5 * body_ref)
     is_pinbar = is_bullish and has_long_tail
 
     bull_icon = "[Y]" if is_bullish else "[N]"
@@ -295,6 +326,7 @@ def check_5m_pinbar(symbol):
         "ratio": round(wick_ratio, 2),
         "status": "BULLISH PINBAR" if is_pinbar else "NO PINBAR",
         "detail": f"{bull_icon} Bullish  {tail_icon} Tail {wick_ratio:.1f}x body",
+        "df": df
     }
 
 
@@ -374,35 +406,53 @@ def record_alert(symbol, memory):
 # ══════════════════════════════════════════════
 # TELEGRAM NOTIFICATION (Inline Keyboard)
 # ══════════════════════════════════════════════
-def send_telegram(message, reply_markup=None):
-    """Kirim pesan ke Telegram via Bot API, dengan optional inline keyboard."""
+def send_telegram(message, reply_markup=None, photo_buf=None):
+    """Kirim pesan ke Telegram via Bot API, support kirim gambar."""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print("  [WARN] Telegram credentials not set. Printing to console.")
         print(message)
         return
 
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": message,
-        "parse_mode": "HTML",
-        "disable_web_page_preview": True,
-    }
-    if reply_markup:
-        payload["reply_markup"] = json.dumps(reply_markup)
+    if photo_buf:
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
+        payload = {
+            "chat_id": TELEGRAM_CHAT_ID,
+            "caption": message,
+            "parse_mode": "HTML",
+        }
+        if reply_markup:
+            payload["reply_markup"] = json.dumps(reply_markup)
+            
+        files = {
+            "photo": ("chart.png", photo_buf.getvalue(), "image/png")
+        }
+        try:
+            resp = _session.post(url, data=payload, files=files, timeout=20)
+            if resp.status_code == 200:
+                print("  [OK] Telegram photo sent.")
+            else:
+                print(f"  [ERROR] Telegram photo: {resp.status_code} -- {resp.text}")
+        except Exception as e:
+            print(f"  [ERROR] Telegram photo send failed: {e}")
+    else:
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        payload = {
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": message,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True,
+        }
+        if reply_markup:
+            payload["reply_markup"] = json.dumps(reply_markup)
 
-    try:
-        resp = _session.post(url, json=payload, timeout=15)
-        if resp.status_code == 200:
-            print("  [OK] Telegram sent.")
-        else:
-            print(f"  [ERROR] Telegram: {resp.status_code} -- {resp.text}")
-    except requests.exceptions.ConnectionError as e:
-        print(f"  [ERROR] Connection to Telegram failed: {e}")
-    except requests.exceptions.Timeout as e:
-        print(f"  [ERROR] Telegram send timed out: {e}")
-    except requests.RequestException as e:
-        print(f"  [ERROR] Telegram send failed: {e}")
+        try:
+            resp = _session.post(url, json=payload, timeout=15)
+            if resp.status_code == 200:
+                print("  [OK] Telegram message sent.")
+            else:
+                print(f"  [ERROR] Telegram: {resp.status_code} -- {resp.text}")
+        except Exception as e:
+            print(f"  [ERROR] Telegram send failed: {e}")
 
 
 def build_inline_keyboard(symbol):
@@ -430,21 +480,18 @@ def build_inline_keyboard(symbol):
     }
 
 
-def build_report(symbol, d1, h4, h1, m5, rr):
+def build_report(symbol, h4, h1, m5, rr):
     """
     Buat format laporan Multi-Timeframe Sniper untuk Telegram.
-    Menampilkan checklist 4 filter + Risk:Reward calculator.
+    Menampilkan checklist filter + Risk:Reward calculator.
     """
     coin = symbol.replace("USDT", "")
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
     report = (
-        f"<b>SNIPER SIGNAL -- {coin}/USDT</b>\n"
+        f"<b>🎯 SNIPER SIGNAL -- {coin}/USDT</b>\n"
         f"<code>------------------------------</code>\n\n"
-        f"<b>MULTI-TIMEFRAME CHECKLIST</b>\n\n"
-        f"  <b>1D | Trend</b>\n"
-        f"  {d1['status']}  {d1['detail']}\n"
-        f"  Close: <code>{d1['close']}</code>  EMA50: <code>{d1['ema50']}</code>\n\n"
+        f"<b>📋 STRATEGY CHECKLIST (REVERSAL)</b>\n\n"
         f"  <b>4H | Support and Volume</b>\n"
         f"  {h4['status']}\n"
         f"  {h4['detail']}\n"
@@ -456,15 +503,15 @@ def build_report(symbol, d1, h4, h1, m5, rr):
         f"  {m5['status']}\n"
         f"  {m5['detail']}\n\n"
         f"<code>------------------------------</code>\n"
-        f"<b>EXECUTION PLAN (R:R 1:{RISK_REWARD_RATIO})</b>\n\n"
+        f"<b>💰 EXECUTION PLAN (R:R 1:{RISK_REWARD_RATIO})</b>\n\n"
         f"  Entry  : <code>{rr['entry']}</code>\n"
         f"  SL     : <code>{rr['sl']}</code>  (-{rr['risk_pct']}%)\n"
         f"  TP     : <code>{rr['tp']}</code>  (+{rr['reward_pct']}%)\n\n"
         f"<code>------------------------------</code>\n"
-        f"<b>VERDICT: ALL 4 FILTERS PASSED</b>\n"
-        f"<i>High-conviction sniper entry detected</i>\n"
+        f"<b>🟢 VERDICT: HIGH CONVICTION ENTRY</b>\n"
+        f"<i>Reversal pattern detected</i>\n"
         f"{now_str}\n"
-        f"<code>#{coin} #Sniper #TopDown</code>"
+        f"<code>#{coin} #Reversal #BottomFishing</code>"
     )
 
     return report
@@ -476,13 +523,16 @@ def build_report(symbol, d1, h4, h1, m5, rr):
 def run_scanner():
     """
     Main loop: Filter Bertingkat (Top-Down Analysis).
-    1D -> 4H -> 1H -> 5m, dengan anti-spam memory.
+    4H -> 1H -> 5m, dengan anti-spam memory.
     Setiap filter yang gagal langsung drop (continue) ke koin berikutnya.
     """
     print("=" * 60)
-    print("  CRYPTO RADAR v4.0 -- Multi-Timeframe Sniper Edition")
+    print("  🎯 CRYPTO RADAR v5.0 -- Dynamic Reversal Sniper")
     print("=" * 60)
-    print(f"  Coins  : {', '.join(COINS)}")
+    
+    coins = get_top_volume_coins(limit=40)
+    
+    print(f"  Dynamic Top 40 : {len(coins)} Coins found")
     print(f"  Time   : {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
     print(f"  Memory : {MEMORY_FILE} (cooldown {COOLDOWN_HOURS}h)")
     print("=" * 60)
@@ -490,7 +540,7 @@ def run_scanner():
     memory = load_memory()
     signals_found = 0
 
-    for symbol in COINS:
+    for symbol in coins:
         coin = symbol.replace("USDT", "")
         print(f"\n{'-' * 50}")
         print(f"  Scanning: {coin}/USDT")
@@ -506,18 +556,8 @@ def run_scanner():
             print(f"  COOLDOWN -- {coin} masih cooldown ({remaining:.1f}h tersisa). Skip.")
             continue
 
-        # == FILTER 1: 1D Trend ==
-        print("  [1/4] 1D Trend ...", end=" ")
-        d1 = check_daily_trend(symbol)
-        print(d1.get("status", "ERROR"))
-        if not d1["pass"]:
-            reason = d1.get("detail", d1.get("reason", ""))
-            print(f"        {coin} {reason}. DROP.")
-            continue
-        time.sleep(0.15)
-
-        # == FILTER 2: 4H Support + Volume ==
-        print("  [2/4] 4H Support+Vol ...", end=" ")
+        # == FILTER 1: 4H Support + Volume ==
+        print("  [1/3] 4H Support+Vol ...", end=" ")
         h4 = check_4h_support_volume(symbol)
         print(h4.get("status", "ERROR"))
         if not h4["pass"]:
@@ -526,8 +566,8 @@ def run_scanner():
             continue
         time.sleep(0.15)
 
-        # == FILTER 3: 1H Stochastic ==
-        print("  [3/4] 1H Stoch(5,3,3) ...", end=" ")
+        # == FILTER 2: 1H Stochastic ==
+        print("  [2/3] 1H Stoch(5,3,3) ...", end=" ")
         h1 = check_1h_stochastic(symbol)
         print(h1.get("status", "ERROR"))
         if not h1["pass"]:
@@ -536,8 +576,8 @@ def run_scanner():
             continue
         time.sleep(0.15)
 
-        # == FILTER 4: 5m Pinbar ==
-        print("  [4/4] 5m Pinbar ...", end=" ")
+        # == FILTER 3: 5m Pinbar ==
+        print("  [3/3] 5m Pinbar ...", end=" ")
         m5 = check_5m_pinbar(symbol)
         print(m5.get("status", "ERROR"))
         if not m5["pass"]:
@@ -545,26 +585,30 @@ def run_scanner():
             print(f"        {coin} {reason}. DROP.")
             continue
 
-        # == ALL 4 FILTERS PASSED ==
-        print(f"\n  {coin} LOLOS SEMUA 4 FILTER!")
+        # == ALL FILTERS PASSED ==
+        print(f"\n  {coin} LOLOS SEMUA FILTER REVERSAL!")
 
         entry_price = m5["close"]
         support_price = h4["support"]
         rr = calculate_risk_reward(entry_price, support_price)
         print(f"  Entry: {rr['entry']} | SL: {rr['sl']} | TP: {rr['tp']}")
 
-        report = build_report(symbol, d1, h4, h1, m5, rr)
+        # Generate Chart
+        print("  Generating chart...")
+        photo_buf = generate_chart(symbol, m5["df"])
+
+        report = build_report(symbol, h4, h1, m5, rr)
         keyboard = build_inline_keyboard(symbol)
-        send_telegram(report, reply_markup=keyboard)
+        send_telegram(report, reply_markup=keyboard, photo_buf=photo_buf)
         signals_found += 1
 
         memory = record_alert(symbol, memory)
-        print("  Sinyal terkirim & tercatat di memory.")
+        print("  Sinyal & Chart terkirim & tercatat di memory.")
 
     save_memory(memory)
 
     print(f"\n{'=' * 60}")
-    print(f"  Scan selesai. Sinyal dikirim: {signals_found}/{len(COINS)}")
+    print(f"  Scan selesai. Sinyal dikirim: {signals_found}/{len(coins)}")
     print(f"{'=' * 60}")
 
 
