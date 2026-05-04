@@ -23,13 +23,7 @@ from urllib3.util.retry import Retry
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
-<<<<<<< HEAD
-COINS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"]
-
-BINANCE_BASE = "https://data-api.binance.vision"
-=======
 BINANCE_BASE = "https://api.binance.com"
->>>>>>> 4c44f24 (add feat: revamp sniper logic to dynamic reversal and add Telegram chart alerts)
 KLINES_ENDPOINT = "/api/v3/klines"
 
 MEMORY_FILE = "alerted_coins.json"
