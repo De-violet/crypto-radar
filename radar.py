@@ -27,7 +27,12 @@ BINANCE_BASE = "https://api.binance.com"
 KLINES_ENDPOINT = "/api/v3/klines"
 
 MEMORY_FILE = "alerted_coins.json"
-COOLDOWN_HOURS = 4
+
+# Dynamic parameters (bisa di-override via .env)
+SCAN_LIMIT = int(os.environ.get("SCAN_LIMIT", 120))
+VOL_SPIKE_THRESHOLD = float(os.environ.get("VOL_SPIKE_THRESHOLD", 1.2))
+STOCH_OVERSOLD = int(os.environ.get("STOCH_OVERSOLD", 20))
+COOLDOWN_HOURS = float(os.environ.get("COOLDOWN_HOURS", 4.0))
 
 RISK_REWARD_RATIO = 2
 STOP_LOSS_PCT = 1.5
@@ -198,7 +203,7 @@ def check_4h_support_volume(symbol):
 
     avg_vol_20 = recent_20["volume"].mean()
     vol_ratio = current_vol / avg_vol_20 if avg_vol_20 > 0 else 0
-    has_volume_spike = vol_ratio >= 1.2
+    has_volume_spike = vol_ratio >= VOL_SPIKE_THRESHOLD
 
     distance_pct = ((current_low - support_level) / support_level) * 100
 
@@ -254,7 +259,7 @@ def check_1h_stochastic(symbol):
     if pd.isna(k_val) or pd.isna(d_val):
         return {"pass": False, "reason": "Stochastic NaN"}
 
-    is_oversold = k_val <= 20
+    is_oversold = k_val <= STOCH_OVERSOLD
     
     os_icon = "[Y]" if is_oversold else "[N]"
 
@@ -269,7 +274,7 @@ def check_1h_stochastic(symbol):
         "d": round(d_val, 2),
         "is_oversold": is_oversold,
         "status": status,
-        "detail": f"{os_icon} K={k_val:.1f} (<=20)",
+        "detail": f"{os_icon} K={k_val:.1f} (<={STOCH_OVERSOLD})",
     }
 
 
@@ -524,9 +529,9 @@ def run_scanner():
     print("  🎯 CRYPTO RADAR v5.0 -- Dynamic Reversal Sniper")
     print("=" * 60)
     
-    coins = get_top_volume_coins(limit=40)
+    coins = get_top_volume_coins(limit=SCAN_LIMIT)
     
-    print(f"  Dynamic Top 40 : {len(coins)} Coins found")
+    print(f"  Dynamic Top {SCAN_LIMIT} : {len(coins)} Coins found")
     print(f"  Time   : {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
     print(f"  Memory : {MEMORY_FILE} (cooldown {COOLDOWN_HOURS}h)")
     print("=" * 60)

@@ -1,5 +1,9 @@
+discord.py
+aiohttp
 requests
 pandas
 pandas-ta
 mplfinance
 matplotlib
+python-dotenv
+flask
