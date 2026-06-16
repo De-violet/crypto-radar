@@ -1,10 +1,25 @@
-# 🎯 Crypto Radar — Dynamic Reversal Sniper (v5.1 Hardened)
+# 🎯 Crypto Radar — Multi-Strategy Sniper (v6.0)
 
 > *"Tired of staring at charts at 2 AM with your eyes half-shut, terrified you'll miss the one good entry? Yeah, been there."*
 
 Crypto Radar was born out of a very real frustration: **the crypto market never sleeps, but we're humans who need rest.** This bot isn't here to replace your trading instincts — think of it more as a tireless assistant that watches the charts while you sleep, grab coffee, or binge Netflix guilt-free.
 
 The idea is simple: **when there's a high-quality opportunity, it whistles. When there isn't, it stays quiet.** No spam, no drama.
+
+---
+
+## 🆕 What's New in v6.0 (Multi-Strategy + Backtest + Validation)
+
+- 🎯 **Multi-strategy support** — 3 strategies now built-in:
+  - `reversal` (default, bottom fishing: 4H support + 1H oversold + 5m pinbar)
+  - `breakout` (momentum continuation: 4H trend + 1H resistance break + 5m volume breakout)
+  - `trend_follow` (pullback in trend: 4H EMA200 + 1H MACD + 5m engulfing at EMA20)
+- 📊 **Backtest engine** (`backtest.py`) — replay historical data, simulate entry/SL/TP, compute win rate, profit factor, max drawdown, expectancy per trade
+- 🧪 **Unit tests** (`tests/` with pytest) — 54 tests covering filter logic, strategy evaluation, backtest math, anti-spam memory, stablecoin filtering
+- 🤖 **CI/CD pipeline** (`.github/workflows/tests.yml`) — auto-run pytest + ruff lint on every push/PR; auto-run backtest validation on main
+- 🏗️ **Strategy registry** (`strategies/`) — add new strategies by subclassing `BaseStrategy` and registering in `strategies/__init__.py`
+- 🔧 **Environment-controlled strategy selection** — `STRATEGIES=reversal,breakout` env var picks which strategies run
+- 📝 **Pure vs Live filter variants** — `check_X(symbol)` (live, fetches data) vs `_check_X_df(df)` (pure, accepts DataFrame) for backtest reuse
 
 ---
 
@@ -291,19 +306,34 @@ If you want maximum reliability (and you're OK with a slightly more involved set
 crypto-radar/
 ├── .github/
 │   └── workflows/
-│       └── main.yml              # GitHub Actions: Telegram sniper every 15 min
+│       ├── main.yml              # GitHub Actions: Telegram sniper every 15 min
+│       └── tests.yml             # CI: pytest + lint + backtest validation
 ├── cogs/
 │   ├── __init__.py
 │   ├── crypto_commands.py        # /search, /info slash commands (Discord)
 │   └── background_tasks.py       # News radar, listing radar, sniper loop (Discord)
+├── strategies/
+│   ├── __init__.py               # Registry: get_strategies() + STRATEGIES env var
+│   ├── base.py                   # BaseStrategy ABC + SignalResult dataclass
+│   ├── reversal.py               # 4H support + 1H oversold + 5m pinbar
+│   ├── breakout.py               # 4H EMA50 + 1H resistance break + 5m vol breakout
+│   └── trend_follow.py           # 4H EMA200 + 1H MACD + 5m engulfing at EMA20
+├── tests/
+│   ├── __init__.py
+│   ├── conftest.py               # Pytest fixtures (synthetic 4H/1H/5m DataFrames)
+│   ├── test_radar.py             # Filter logic + R:R + anti-spam tests
+│   ├── test_strategies.py        # Strategy evaluation tests
+│   └── test_backtest.py          # Trade simulation + metrics tests
 ├── .env.example                  # Template for env vars (DO NOT commit .env)
 ├── .gitignore                    # Properly ignores .env, __pycache__, runtime memory
 ├── README.md                     # You're reading this right now
 ├── alerted_coins.json            # Anti-spam memory (auto-committed by GH Actions)
+├── backtest.py                   # Backtest engine (walk-forward + metrics)
 ├── keep_alive.py                 # Flask HTTP server with /health endpoint
 ├── main.py                       # Discord bot entry point
-├── radar.py                      # The brain: scanner + filters + notifier (Telegram mode)
-└── requirements.txt              # Pinned dependencies
+├── radar.py                      # Scanner engine: filters + multi-strategy orchestrator
+├── requirements.txt              # Pinned runtime dependencies
+└── requirements-dev.txt          # Pinned dev dependencies (pytest, ruff)
 ```
 
 ---
@@ -331,6 +361,173 @@ cp .env.example .env
 python radar.py    # Telegram sniper mode
 python main.py     # Discord bot mode
 ```
+
+---
+
+## 🎯 Multi-Strategy System
+
+Crypto Radar v6.0 supports multiple trading strategies that run in parallel. Each strategy is a Python class subclassing `BaseStrategy` and registered in `strategies/__init__.py`.
+
+### Built-in Strategies
+
+| Strategy | Direction | Description | Lookback (4H/1H/5m) |
+|----------|-----------|-------------|---------------------|
+| `reversal` | Long | **Bottom fishing**: 4H support bounce + volume spike → 1H Stochastic oversold → 5m bullish pinbar | 30 / 50 / 25 |
+| `breakout` | Long | **Momentum continuation**: 4H EMA50 uptrend → 1H 20-candle resistance break → 5m volume breakout above prev high | 60 / 50 / 30 |
+| `trend_follow` | Long | **Pullback in trend**: 4H price > EMA200 → 1H MACD histogram bullish → 5m bullish engulfing at EMA20 | 220 / 100 / 50 |
+
+### Selecting Strategies (env var)
+
+```bash
+# Default: ALL strategies active
+STRATEGIES=              # uses all 3
+
+# Run only reversal (v5.1 behavior)
+STRATEGIES=reversal
+
+# Run breakout + trend_follow (skip reversal)
+STRATEGIES=breakout,trend_follow
+```
+
+In GitHub Actions, set this as a **Variable** (not Secret) under Settings → Secrets and variables → Actions → Variables.
+
+### Adding a Custom Strategy
+
+1. Create `strategies/my_strategy.py`:
+
+```python
+from .base import BaseStrategy, SignalResult
+import radar
+
+class MyStrategy(BaseStrategy):
+    name = "my_strategy"
+    risk_reward_ratio = 2.0
+    stop_loss_pct = 1.5
+
+    def required_lookback(self) -> dict:
+        return {"4h": 50, "1h": 50, "5m": 25}
+
+    def check_signal(self, symbol: str) -> SignalResult:
+        # Live mode: fetch fresh data
+        df = radar.fetch_klines(symbol, "4h", limit=50)
+        return self._evaluate(df)
+
+    def check_signal_at(self, dfs, current_time) -> SignalResult:
+        # Backtest mode: use pre-fetched data
+        df = dfs["4h"].loc[dfs["4h"]["close_time"] <= current_time]
+        return self._evaluate(df)
+
+    def _evaluate(self, df) -> SignalResult:
+        # Your filter logic here
+        if some_condition:
+            return SignalResult(
+                strategy_name=self.name, passed=True,
+                entry=..., stop_loss=..., take_profit=...,
+                details={...}, chart_df=df.tail(25),
+            )
+        return SignalResult(strategy_name=self.name, passed=False, reason="...")
+```
+
+2. Register in `strategies/__init__.py`:
+
+```python
+from .my_strategy import MyStrategy
+STRATEGY_REGISTRY["my_strategy"] = MyStrategy
+```
+
+3. Add tests in `tests/test_strategies.py`.
+
+4. Activate via `STRATEGIES=my_strategy` env var.
+
+---
+
+## 📊 Backtest Engine
+
+Validate strategy profitability BEFORE live trading. Replays historical klines, walks forward per 5m candle close, simulates entry/SL/TP outcomes.
+
+### Quick Start
+
+```bash
+# Backtest BTC for 30 days with all strategies
+python backtest.py --symbol BTCUSDT --days 30 --strategy all
+
+# Backtest BTC + ETH for 14 days with reversal only
+python backtest.py --symbol BTCUSDT,ETHUSDT --days 14 --strategy reversal
+
+# Backtest BTC for 90 days with breakout (longer = more reliable stats)
+python backtest.py --symbol BTCUSDT --days 90 --strategy breakout
+```
+
+### Output Metrics
+
+| Metric | Meaning | Healthy Range |
+|--------|---------|---------------|
+| **Signals** | Total trade signals generated | Depends on strategy aggressiveness |
+| **WinRate** | % of trades that hit TP before SL | > 50% for trend-follow, > 40% for reversal |
+| **PF** (Profit Factor) | gross_profit / gross_loss | > 1.5 = good, > 2.0 = excellent |
+| **AvgWin / AvgLoss** | Average PnL % per winning/losing trade | Should align with R:R (1:2 → +3%/-1.5%) |
+| **MaxDD** | Peak-to-trough drawdown on cumulative PnL | < 10% = acceptable |
+| **Expectancy** | Average PnL per trade | > 0% = profitable |
+
+### Example Output
+
+```
+==============================================================================================================
+  📊 BACKTEST RESULTS — BTCUSDT — 7 days
+==============================================================================================================
+  Strategy        Signals   Win  Loss    TO  WinRate       PF   AvgWin  AvgLoss    MaxDD   Expect
+--------------------------------------------------------------------------------------------------------------
+  breakout              2     0     1     1     0.0%     0.67    0.00%   -1.14%    1.14%   -0.19%
+==============================================================================================================
+```
+
+This shows breakout strategy had 2 signals in 7 days for BTC; 1 hit SL (-1.14%), 1 timed out. **PF=0.67 means it's losing money** — you'd tune the parameters (e.g. raise volume threshold) before deploying live.
+
+### Trade Simulation Logic
+
+- **Entry**: at close of the 5m signal candle
+- **SL priority**: if a candle's `low <= SL` AND `high >= TP` in the same candle, **SL wins** (conservative assumption — worst-case fills)
+- **Timeout**: if neither SL nor TP hit within `MAX_HOLD_CANDLES` (288 × 5m = 24h), close at last candle's close
+- **Cooldown**: 4-hour cooldown between signals of the same strategy on the same symbol (matches live mode)
+
+### Reports
+
+JSON reports saved to `./backtest_reports/<SYMBOL>_<timestamp>.json` with full trade list for further analysis.
+
+---
+
+## 🧪 Testing & Validation
+
+### Run Tests Locally
+
+```bash
+pip install -r requirements-dev.txt
+pytest tests/ -v
+```
+
+### Test Coverage
+
+| File | Tests | What's Covered |
+|------|-------|----------------|
+| `tests/test_radar.py` | 19 | Filter logic (4H/1H/5m), R:R calculator, anti-spam memory, stablecoin filtering |
+| `tests/test_strategies.py` | 20 | Strategy registry, base R:R, all 3 strategies' filter helpers + end-to-end signal evaluation |
+| `tests/test_backtest.py` | 15 | Trade simulation (win/loss/timeout/SL-priority), metrics computation (PF, win rate, max DD, expectancy) |
+
+All tests use **synthetic data** (no network) — they run in ~2 seconds and are safe to execute in CI.
+
+### CI Pipeline (`.github/workflows/tests.yml`)
+
+On every push/PR to `main`:
+1. Install `requirements-dev.txt`
+2. Run `ruff` lint (non-blocking)
+3. Run `pytest` with verbose output
+4. Generate coverage report (uploaded as artifact, 7-day retention)
+
+On push to `main` (after tests pass):
+5. Run live backtest on BTCUSDT (7 days, all strategies)
+6. Run live backtest on ETHUSDT (7 days, reversal)
+
+If backtests fail (network error, etc.), the job still passes — backtest is informational, not blocking.
 
 ---
 

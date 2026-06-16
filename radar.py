@@ -184,18 +184,67 @@ def fetch_klines(symbol, interval, limit=100):
         log.error(f"Fetch {symbol} {interval}: {e}")
         return pd.DataFrame()
 
+    return _parse_klines(data)
+
+
+def _parse_klines(data):
+    """Parse raw Binance klines JSON into DataFrame."""
     df = pd.DataFrame(data, columns=[
         "open_time", "open", "high", "low", "close", "volume",
         "close_time", "quote_vol", "trades", "taker_buy_base",
         "taker_buy_quote", "ignore",
     ])
-
     for col in ["open", "high", "low", "close", "volume"]:
         df[col] = df[col].astype(float)
-
     df["open_time"] = pd.to_datetime(df["open_time"], unit="ms", utc=True)
     df["close_time"] = pd.to_datetime(df["close_time"], unit="ms", utc=True)
+    return df
 
+
+def fetch_klines_paginated(symbol, interval, total_limit=1000):
+    """
+    Fetch large historical klines by paginating backwards via endTime.
+    Binance allows max 1000 candles per request; this function transparently
+    fetches up to `total_limit` candles.
+
+    Used by the backtest engine which needs weeks/months of data.
+    """
+    page_size = 1000
+    all_data = []
+    remaining = total_limit
+    end_time = None
+
+    while remaining > 0:
+        limit = min(page_size, remaining)
+        params = {"symbol": symbol, "interval": interval, "limit": limit}
+        if end_time is not None:
+            params["endTime"] = end_time
+
+        try:
+            data, _ = _binance_get(KLINES_ENDPOINT, params=params)
+        except requests.RequestException as e:
+            log.error(f"Paginated fetch failed for {symbol} {interval}: {e}")
+            break
+
+        if not data:
+            break
+
+        all_data = data + all_data  # prepend older candles
+        oldest_open_time = data[0][0]
+        end_time = oldest_open_time - 1
+        remaining -= len(data)
+
+        if len(data) < limit:
+            break  # no more historical data available
+
+        time.sleep(0.1)  # be polite to Binance API
+
+    if not all_data:
+        return pd.DataFrame()
+
+    # Dedup by open_time (in case overlap)
+    df = _parse_klines(all_data)
+    df = df.drop_duplicates(subset="open_time").sort_values("open_time").reset_index(drop=True)
     return df
 
 
@@ -246,7 +295,12 @@ def check_4h_support_volume(symbol):
     Volume spike = volume candle terakhir >= VOL_SPIKE_THRESHOLD x avg 20 candle.
     """
     df = fetch_klines(symbol, "4h", limit=30)
-    if df.empty:
+    return _check_4h_support_volume_df(df)
+
+
+def _check_4h_support_volume_df(df):
+    """Pure (no-fetch) variant of check_4h_support_volume. Used by backtest."""
+    if df is None or df.empty:
         return {"pass": False, "reason": "Data fetch failed"}
 
     recent_20 = df.tail(20)
@@ -305,7 +359,12 @@ def check_1h_stochastic(symbol):
     PASS jika K <= 20 (oversold).
     """
     df = fetch_klines(symbol, "1h", limit=50)
-    if df.empty:
+    return _check_1h_stochastic_df(df)
+
+
+def _check_1h_stochastic_df(df):
+    """Pure (no-fetch) variant of check_1h_stochastic. Used by backtest."""
+    if df is None or df.empty:
         return {"pass": False, "reason": "Data fetch failed"}
 
     stoch = ta.stoch(df["high"], df["low"], df["close"], k=5, d=3, smooth_k=3)
@@ -356,7 +415,16 @@ def check_5m_pinbar(symbol):
     candle yang masih forming.
     """
     df = fetch_klines(symbol, "5m", limit=25)
-    if df.empty:
+    return _check_5m_pinbar_df(df)
+
+
+def _check_5m_pinbar_df(df):
+    """
+    Pure (no-fetch) variant of check_5m_pinbar.
+    NOTE: di mode backtest, kita anggap df.iloc[-1] sudah closed
+    (backtest walk-forward selalu slice sampai candle yang closed).
+    """
+    if df is None or df.empty:
         return {"pass": False, "reason": "Data fetch failed", "df": None}
 
     # Tentukan candle yang sudah close
@@ -566,14 +634,59 @@ def build_inline_keyboard(symbol):
     }
 
 
-def build_report(symbol, h4, h1, m5, rr):
+def build_report_from_signal(symbol, signal_result):
     """
-    Buat format laporan Multi-Timeframe Sniper untuk Telegram.
-    Menampilkan checklist filter + Risk:Reward calculator.
+    Buat format laporan Telegram dari SignalResult (multi-strategy aware).
     """
     coin = symbol.replace("USDT", "")
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    s = signal_result
+    rr = s.details.get("rr", {})
+    strategy_label = {
+        "reversal": "REVERSAL / BOTTOM FISHING",
+        "breakout": "BREAKOUT / MOMENTUM",
+        "trend_follow": "TREND FOLLOW / PULLBACK",
+    }.get(s.strategy_name, s.strategy_name.upper())
+    hashtag = {
+        "reversal": "#Reversal #BottomFishing",
+        "breakout": "#Breakout #Momentum",
+        "trend_follow": "#TrendFollow #Pullback",
+    }.get(s.strategy_name, f"#{s.strategy_name}")
 
+    # Build filter checklist dari details dict
+    checklist_lines = []
+    for tf_key, tf_label in [("4h", "4H"), ("1h", "1H"), ("5m", "5m")]:
+        tf_data = s.details.get(tf_key, {})
+        if not tf_data:
+            continue
+        status = tf_data.get("status", "")
+        detail = tf_data.get("detail", "")
+        checklist_lines.append(f"  <b>{tf_label}</b>\n  {status}\n  {detail}")
+    checklist_block = "\n\n".join(checklist_lines)
+
+    report = (
+        f"<b>🎯 SNIPER SIGNAL -- {coin}/USDT</b>\n"
+        f"<code>------------------------------</code>\n\n"
+        f"<b>📋 STRATEGY: {strategy_label}</b>\n\n"
+        f"{checklist_block}\n\n"
+        f"<code>------------------------------</code>\n"
+        f"<b>💰 EXECUTION PLAN (R:R 1:{s.risk_reward_ratio})</b>\n\n"
+        f"  Entry  : <code>{rr.get('entry', s.entry)}</code>\n"
+        f"  SL     : <code>{rr.get('sl', s.stop_loss)}</code>  (-{rr.get('risk_pct', 0)}%)\n"
+        f"  TP     : <code>{rr.get('tp', s.take_profit)}</code>  (+{rr.get('reward_pct', 0)}%)\n\n"
+        f"<code>------------------------------</code>\n"
+        f"<b>🟢 VERDICT: HIGH CONVICTION ENTRY</b>\n"
+        f"<i>{strategy_label}</i>\n"
+        f"{now_str}\n"
+        f"<code>#{coin} {hashtag}</code>"
+    )
+    return report
+
+
+def build_report(symbol, h4, h1, m5, rr):
+    """Legacy report builder (kept for backward compat)."""
+    coin = symbol.replace("USDT", "")
+    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     report = (
         f"<b>🎯 SNIPER SIGNAL -- {coin}/USDT</b>\n"
         f"<code>------------------------------</code>\n\n"
@@ -599,29 +712,34 @@ def build_report(symbol, h4, h1, m5, rr):
         f"{now_str}\n"
         f"<code>#{coin} #Reversal #BottomFishing</code>"
     )
-
     return report
 
 
 # ══════════════════════════════════════════════
-# MAIN SCANNER ENGINE
+# MAIN SCANNER ENGINE (Multi-Strategy)
 # ══════════════════════════════════════════════
 def run_scanner():
     """
-    Main loop: Filter Bertingkat (Top-Down Analysis).
-    4H -> 1H -> 5m, dengan anti-spam memory.
-    Setiap filter yang gagal langsung drop (continue) ke koin berikutnya.
+    Main loop: jalankan semua strategi yang aktif (env STRATEGIES) untuk
+    setiap top coin. Anti-spam memory key = (symbol, strategy_name).
     """
+    # Lazy import to avoid circular import (strategies -> radar)
+    from strategies import get_strategies
+
+    active_strategies = get_strategies()
+    strategy_names = [s.name for s in active_strategies]
+
     print("=" * 60)
-    print("  🎯 CRYPTO RADAR v5.1 -- Dynamic Reversal Sniper (Hardened)")
+    print("  🎯 CRYPTO RADAR v6.0 -- Multi-Strategy Sniper (Hardened)")
     print("=" * 60)
 
     coins = get_top_volume_coins(limit=SCAN_LIMIT)
 
     print(f"  Dynamic Top {SCAN_LIMIT} : {len(coins)} Coins found")
-    print(f"  Time   : {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
-    print(f"  Memory : {MEMORY_FILE} (cooldown {COOLDOWN_HOURS}h)")
-    print(f"  Vol Spike Threshold: {VOL_SPIKE_THRESHOLD}x")
+    print(f"  Time     : {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
+    print(f"  Strategies: {strategy_names}")
+    print(f"  Memory   : {MEMORY_FILE} (cooldown {COOLDOWN_HOURS}h)")
+    print(f"  Vol Spike: {VOL_SPIKE_THRESHOLD}x")
     print("=" * 60)
 
     memory = load_memory()
@@ -633,69 +751,56 @@ def run_scanner():
         print(f"  Scanning: {coin}/USDT")
         print(f"{'-' * 50}")
 
-        # Anti-spam check
-        if is_on_cooldown(symbol, memory):
-            elapsed = (
-                datetime.now(timezone.utc).timestamp()
-                - memory[symbol].get("last_alert", 0)
-            ) / 3600
-            remaining = COOLDOWN_HOURS - elapsed
-            print(f"  COOLDOWN -- {coin} masih cooldown ({remaining:.1f}h tersisa). Skip.")
-            continue
+        for strategy in active_strategies:
+            memory_key = f"{symbol}:{strategy.name}"
 
-        # == FILTER 1: 4H Support + Volume ==
-        print("  [1/3] 4H Support+Vol ...", end=" ")
-        h4 = check_4h_support_volume(symbol)
-        print(h4.get("status", "ERROR"))
-        if not h4["pass"]:
-            reason = h4.get("detail", h4.get("reason", ""))
-            print(f"        {coin} {reason}. DROP.")
-            continue
-        time.sleep(0.15)
+            # Anti-spam check per (symbol, strategy)
+            if is_on_cooldown(memory_key, memory):
+                elapsed = (
+                    datetime.now(timezone.utc).timestamp()
+                    - memory[memory_key].get("last_alert", 0)
+                ) / 3600
+                remaining = COOLDOWN_HOURS - elapsed
+                print(f"  [{strategy.name}] COOLDOWN -- {coin} ({remaining:.1f}h tersisa). Skip.")
+                continue
 
-        # == FILTER 2: 1H Stochastic ==
-        print("  [2/3] 1H Stoch(5,3,3) ...", end=" ")
-        h1 = check_1h_stochastic(symbol)
-        print(h1.get("status", "ERROR"))
-        if not h1["pass"]:
-            reason = h1.get("detail", h1.get("reason", ""))
-            print(f"        {coin} {reason}. DROP.")
-            continue
-        time.sleep(0.15)
+            print(f"  [{strategy.name}] evaluating...", end=" ")
+            try:
+                result = strategy.check_signal(symbol)
+            except Exception as e:
+                log.exception(f"Strategy {strategy.name} error on {symbol}: {e}")
+                print(f"ERROR: {e}")
+                continue
 
-        # == FILTER 3: 5m Pinbar ==
-        print("  [3/3] 5m Pinbar ...", end=" ")
-        m5 = check_5m_pinbar(symbol)
-        print(m5.get("status", "ERROR"))
-        if not m5["pass"]:
-            reason = m5.get("detail", m5.get("reason", ""))
-            print(f"        {coin} {reason}. DROP.")
-            continue
+            if not result.passed:
+                print(f"FAIL -- {result.reason}")
+                time.sleep(0.15)
+                continue
 
-        # == ALL FILTERS PASSED ==
-        print(f"\n  {coin} LOLOS SEMUA FILTER REVERSAL!")
+            print(f"PASS! Entry={result.entry} SL={result.stop_loss} TP={result.take_profit}")
 
-        entry_price = m5["close"]
-        support_price = h4["support"]
-        rr = calculate_risk_reward(entry_price, support_price)
-        print(f"  Entry: {rr['entry']} | SL: {rr['sl']} | TP: {rr['tp']}")
+            # Generate chart (5m) bila chart_df tersedia
+            photo_buf = None
+            if result.chart_df is not None and not result.chart_df.empty:
+                print("  Generating chart...")
+                try:
+                    photo_buf = generate_chart(symbol, result.chart_df)
+                except Exception as e:
+                    log.error(f"Chart generation failed: {e}")
 
-        # Generate Chart
-        print("  Generating chart...")
-        photo_buf = generate_chart(symbol, m5["df"])
+            report = build_report_from_signal(symbol, result)
+            keyboard = build_inline_keyboard(symbol)
+            send_telegram(report, reply_markup=keyboard, photo_buf=photo_buf)
+            signals_found += 1
 
-        report = build_report(symbol, h4, h1, m5, rr)
-        keyboard = build_inline_keyboard(symbol)
-        send_telegram(report, reply_markup=keyboard, photo_buf=photo_buf)
-        signals_found += 1
-
-        memory = record_alert(symbol, memory)
-        print("  Sinyal & Chart terkirim & tercatat di memory.")
+            memory = record_alert(memory_key, memory)
+            print(f"  [{strategy.name}] {coin} signal sent & recorded.")
+            time.sleep(0.25)  # throttle antar strategy
 
     save_memory(memory)
 
     print(f"\n{'=' * 60}")
-    print(f"  Scan selesai. Sinyal dikirim: {signals_found}/{len(coins)}")
+    print(f"  Scan selesai. Sinyal dikirim: {signals_found} ({len(coins)} coins × {len(active_strategies)} strategies)")
     print(f"{'=' * 60}")
 
 

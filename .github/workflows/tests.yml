@@ -1,0 +1,88 @@
+name: Tests & Validation
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: 🧪 Run pytest + lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: 🐍 Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: 📦 Install Dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: 🔍 Lint with ruff
+        run: |
+          ruff check . --select=E,F,W --ignore=E501 || true
+        continue-on-error: true
+
+      - name: 🧪 Run pytest
+        env:
+          # Tests don't hit network (all use synthetic data), but set dummy env
+          TELEGRAM_BOT_TOKEN: ""
+          TELEGRAM_CHAT_ID: ""
+        run: |
+          pytest tests/ -v --tb=short --maxfail=5
+
+      - name: 📊 Generate coverage report
+        run: |
+          pytest tests/ --cov=. --cov-report=term-missing --cov-report=xml || true
+        continue-on-error: true
+
+      - name: 📤 Upload coverage artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.xml
+          if-no-files-found: ignore
+          retention-days: 7
+
+  backtest-validation:
+    name: 📊 Backtest Validation (BTC 7 days)
+    runs-on: ubuntu-latest
+    # Run after tests pass, on main only (to save CI minutes)
+    needs: test
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: 🐍 Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: 📦 Install Dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 📊 Run backtest on BTCUSDT (7 days, all strategies)
+        run: |
+          python backtest.py --symbol BTCUSDT --days 7 --strategy all --no-save
+
+      - name: 📊 Run backtest on ETHUSDT (7 days, reversal only)
+        run: |
+          python backtest.py --symbol ETHUSDT --days 7 --strategy reversal --no-save
