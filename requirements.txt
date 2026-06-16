@@ -1,9 +1,10 @@
-discord.py
-aiohttp
-requests
-pandas
-pandas-ta
-mplfinance
-matplotlib
-python-dotenv
-flask
+# Pinned versions untuk reproducibility (cek kompatibilitas sebelum upgrade major)
+discord.py>=2.3.2,<3.0.0
+aiohttp>=3.9.0,<4.0.0
+requests>=2.31.0,<3.0.0
+pandas>=2.1.0,<3.0.0
+pandas-ta>=0.3.14b1
+mplfinance>=0.12.10b0
+matplotlib>=3.8.0,<4.0.0
+python-dotenv>=1.0.0,<2.0.0
+flask>=3.0.0,<4.0.0

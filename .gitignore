@@ -1,0 +1,70 @@
+# ══════════════════════════════════════════════
+# SECRETS — JANGAN PERNAH COMMIT
+# ══════════════════════════════════════════════
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# ══════════════════════════════════════════════
+# RUNTIME MEMORY (auto-generated, tidak perlu commit)
+# ══════════════════════════════════════════════
+# NOTE: `alerted_coins.json` sengaja TIDAK di-ignore karena
+# di-auto-commit oleh GitHub Actions untuk persistence antar run.
+# Kalau lu mau ignore (misalnya run local aja), uncomment baris di bawah.
+# alerted_coins.json
+posted_news.json
+posted_listings.json
+
+# ══════════════════════════════════════════════
+# PYTHON
+# ══════════════════════════════════════════════
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# ══════════════════════════════════════════════
+# VIRTUALENV
+# ══════════════════════════════════════════════
+venv/
+.venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# ══════════════════════════════════════════════
+# IDE / EDITOR
+# ══════════════════════════════════════════════
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ══════════════════════════════════════════════
+# LOGS
+# ══════════════════════════════════════════════
+*.log
+logs/

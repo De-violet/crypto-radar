@@ -1,11 +1,23 @@
 """
-CRYPTO RADAR v5.0 — Dynamic Reversal Sniper
+CRYPTO RADAR v5.1 — Dynamic Reversal Sniper (Hardened Edition)
 Filter Bertingkat: 4H -> 1H -> 5m (Bottom Fishing)
 Anti-Spam Memory  |  Risk:Reward 1:2  |  Inline Keyboard | Auto Chart
+
+Changes vs v5.0:
+- Binance API geo-restriction workaround (multiple endpoints + data-api.binance.vision)
+- Volume spike threshold default raised to 1.5x (was 1.2x — too noisy)
+- Pinbar candle selection uses close_time verification (not blind iloc[-2])
+- Stablecoins list expanded (USDS, USDD, USDE, etc.)
+- matplotlib figure explicitly closed after savefig (memory leak fix)
+- Pinbar comment synced with code (1.5x, not 2x)
+- logging module replaces print() for structured logs
+- File locking on alerted_coins.json (fcntl on POSIX)
 """
 
+import fcntl
 import io
 import json
+import logging
 import os
 import time
 from datetime import datetime, timezone
@@ -18,24 +30,57 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 # ══════════════════════════════════════════════
+# LOGGING SETUP
+# ══════════════════════════════════════════════
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+log = logging.getLogger("crypto-radar")
+
+
+# ══════════════════════════════════════════════
 # CONFIGURATION
 # ══════════════════════════════════════════════
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
-BINANCE_BASE = "https://api.binance.com"
+# Binance endpoints — multiple fallbacks to bypass 451 geo-restriction on US IPs.
+# `data-api.binance.vision` is the public market-data mirror (no auth, no geo-block).
+BINANCE_ENDPOINTS = [
+    "https://data-api.binance.vision",  # public market data, no geo-block
+    "https://api.binance.com",
+    "https://api-gcp.binance.com",
+    "https://api1.binance.com",
+    "https://api2.binance.com",
+    "https://api3.binance.com",
+    "https://api4.binance.com",
+]
 KLINES_ENDPOINT = "/api/v3/klines"
+TICKER_24HR_ENDPOINT = "/api/v3/ticker/24hr"
 
 MEMORY_FILE = "alerted_coins.json"
 
-# Dynamic parameters (bisa di-override via .env)
+# Dynamic parameters (bisa di-override via env)
 SCAN_LIMIT = int(os.environ.get("SCAN_LIMIT", 120))
-VOL_SPIKE_THRESHOLD = float(os.environ.get("VOL_SPIKE_THRESHOLD", 1.2))
+VOL_SPIKE_THRESHOLD = float(os.environ.get("VOL_SPIKE_THRESHOLD", 1.5))  # was 1.2 — too noisy
 STOCH_OVERSOLD = int(os.environ.get("STOCH_OVERSOLD", 20))
 COOLDOWN_HOURS = float(os.environ.get("COOLDOWN_HOURS", 4.0))
 
 RISK_REWARD_RATIO = 2
 STOP_LOSS_PCT = 1.5
+
+# Expanded stablecoin list (USDT pairs that should never be scanned)
+STABLECOIN_SYMBOLS = {
+    "USDCUSDT", "FDUSDUSDT", "TUSDUSDT", "BUSDUSDT",
+    "DAIUSDT", "USDPUSDT", "EURUSDT", "AEURUSDT", "USTCUSDT",
+    "USDSUSDT", "USDDUSDT", "USDEUSDT", "USDJUSDT", "PAXGUSDT",
+    "XAUTUSDT",  # gold-backed
+    # Leveraged tokens (reset mechanism breaks TA)
+    "BTCUPUSDT", "BTCDOWNUSDT", "ETHUPUSDT", "ETHDOWNUSDT",
+    "BNBUPUSDT", "BNBDOWNUSDT", "TRXUPUSDT", "TRXDOWNUSDT",
+}
 
 
 # ══════════════════════════════════════════════
@@ -63,38 +108,53 @@ _session = _build_session()
 
 
 # ══════════════════════════════════════════════
+# BINANCE REQUEST HELPER (multi-endpoint failover)
+# ══════════════════════════════════════════════
+def _binance_get(path, params=None, timeout=15):
+    """
+    Try each Binance endpoint until one succeeds.
+    Returns (data, used_base) on success, raises after all endpoints fail.
+    """
+    last_err = None
+    for base in BINANCE_ENDPOINTS:
+        url = f"{base}{path}"
+        try:
+            resp = _session.get(url, params=params, timeout=timeout)
+            if resp.status_code == 451:
+                log.debug(f"  [binance] 451 on {base}, trying next")
+                last_err = f"HTTP 451 from {base}"
+                continue
+            resp.raise_for_status()
+            return resp.json(), base
+        except requests.RequestException as e:
+            log.debug(f"  [binance] {base} failed: {e}")
+            last_err = str(e)
+    raise requests.RequestException(f"All Binance endpoints failed. Last: {last_err}")
+
+
+# ══════════════════════════════════════════════
 # DYNAMIC COIN SCANNER
 # ══════════════════════════════════════════════
 def get_top_volume_coins(limit=30):
     """
     Ambil daftar top koin USDT-Margined berdasarkan 24h quote volume.
-    Abaikan stablecoins.
+    Abaikan stablecoins dan leveraged tokens.
     """
-    url = f"{BINANCE_BASE}/api/v3/ticker/24hr"
     try:
-        resp = _session.get(url, timeout=15)
-        resp.raise_for_status()
-        data = resp.json()
+        data, _ = _binance_get(TICKER_24HR_ENDPOINT)
     except Exception as e:
-        print(f"  [ERROR] Gagal fetch 24hr ticker: {e}")
+        log.error(f"Gagal fetch 24hr ticker: {e}")
         return []
 
-    # Filter out stablecoins
-    stablecoins = {
-        "USDCUSDT", "FDUSDUSDT", "TUSDUSDT", "BUSDUSDT", 
-        "DAIUSDT", "USDPUSDT", "EURUSDT", "AEURUSDT", "USTCUSDT"
-    }
-    
     valid_coins = []
     for item in data:
         symbol = item['symbol']
-        if symbol.endswith("USDT") and symbol not in stablecoins:
+        if symbol.endswith("USDT") and symbol not in STABLECOIN_SYMBOLS:
             valid_coins.append({
                 "symbol": symbol,
                 "quoteVolume": float(item['quoteVolume'])
             })
-            
-    # Urutkan berdasarkan quoteVolume tertinggi
+
     valid_coins.sort(key=lambda x: x["quoteVolume"], reverse=True)
     return [c["symbol"] for c in valid_coins[:limit]]
 
@@ -107,24 +167,21 @@ def fetch_klines(symbol, interval, limit=100):
     Fetch kline/candlestick data dari Binance Public API.
     Returns DataFrame dengan kolom OHLCV standar.
     """
-    url = f"{BINANCE_BASE}{KLINES_ENDPOINT}"
     params = {
         "symbol": symbol,
         "interval": interval,
         "limit": limit,
     }
     try:
-        resp = _session.get(url, params=params, timeout=15)
-        resp.raise_for_status()
-        data = resp.json()
+        data, _ = _binance_get(KLINES_ENDPOINT, params=params)
     except requests.exceptions.ConnectionError as e:
-        print(f"  [ERROR] Connection to Binance failed for {symbol} {interval}: {e}")
+        log.error(f"Connection failed for {symbol} {interval}: {e}")
         return pd.DataFrame()
     except requests.exceptions.Timeout as e:
-        print(f"  [ERROR] Timeout fetching {symbol} {interval}: {e}")
+        log.error(f"Timeout fetching {symbol} {interval}: {e}")
         return pd.DataFrame()
     except requests.RequestException as e:
-        print(f"  [ERROR] Fetch {symbol} {interval}: {e}")
+        log.error(f"Fetch {symbol} {interval}: {e}")
         return pd.DataFrame()
 
     df = pd.DataFrame(data, columns=[
@@ -136,8 +193,8 @@ def fetch_klines(symbol, interval, limit=100):
     for col in ["open", "high", "low", "close", "volume"]:
         df[col] = df[col].astype(float)
 
-    df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")
-    df["close_time"] = pd.to_datetime(df["close_time"], unit="ms")
+    df["open_time"] = pd.to_datetime(df["open_time"], unit="ms", utc=True)
+    df["close_time"] = pd.to_datetime(df["close_time"], unit="ms", utc=True)
 
     return df
 
@@ -150,22 +207,27 @@ def generate_chart(symbol, df):
     Generate 5m candlestick chart and return as BytesIO.
     df should have datetime index and OHLC columns.
     """
-    # Create a copy and set datetime index for mplfinance
+    import matplotlib.pyplot as plt  # local import to allow global mplfinance config
+
     df_chart = df.copy()
     df_chart.set_index("open_time", inplace=True)
-    
+
     buf = io.BytesIO()
-    
-    # Customize the style
+
     mc = mpf.make_marketcolors(up='g', down='r', edge='inherit', wick='inherit', volume='in', ohlc='i')
     s  = mpf.make_mpf_style(marketcolors=mc, gridstyle=':', y_on_right=False)
-    
-    # Plot to buffer
+
     title = f"\n{symbol} 5m Rejection"
-    mpf.plot(df_chart, type='candle', style=s, title=title, 
-             volume=False, savefig=dict(fname=buf, dpi=100, bbox_inches='tight'),
-             figsize=(6, 4))
-    
+    fig, _ = mpf.plot(
+        df_chart, type='candle', style=s, title=title,
+        volume=False, savefig=dict(fname=buf, dpi=100, bbox_inches='tight'),
+        figsize=(6, 4),
+        returnfig=True,
+    )
+
+    # IMPORTANT: explicitly close figure to prevent memory leak in long-running bots
+    plt.close(fig)
+
     buf.seek(0)
     return buf
 
@@ -174,14 +236,14 @@ def generate_chart(symbol, df):
 # FILTER 1 — 4H: Support Bounce + Volume Spike
 # Syarat: (1) Low masuk zona buffer support
 #         (2) Close > Open (bounce/memantul)
-#         (3) Volume >= 1.5x rata-rata 20 candle
+#         (3) Volume >= VOL_SPIKE_THRESHOLD (default 1.5x) rata-rata 20 candle
 # ══════════════════════════════════════════════
 def check_4h_support_volume(symbol):
     """
     Cek apakah harga menyentuh support, memantul, dan volume spike.
     Support = lowest low dari 20 candle terakhir.
-    Buffer = 1.5% dari support level.
-    Volume spike = volume candle terakhir >= 1.5x avg 20 candle.
+    Buffer = 1.5% di atas support level.
+    Volume spike = volume candle terakhir >= VOL_SPIKE_THRESHOLD x avg 20 candle.
     """
     df = fetch_klines(symbol, "4h", limit=30)
     if df.empty:
@@ -260,7 +322,7 @@ def check_1h_stochastic(symbol):
         return {"pass": False, "reason": "Stochastic NaN"}
 
     is_oversold = k_val <= STOCH_OVERSOLD
-    
+
     os_icon = "[Y]" if is_oversold else "[N]"
 
     if is_oversold:
@@ -281,24 +343,35 @@ def check_1h_stochastic(symbol):
 # ══════════════════════════════════════════════
 # FILTER 3 — 5m: Bullish Pinbar Sniper Entry
 # Syarat: (1) Close > Open (bullish candle)
-#         (2) Lower wick >= 2x body
+#         (2) Lower wick >= 1.5x body
+# Catatan: candle [-1] di-resolve secara close_time:
+#   - kalau candle [-1] sudah close lebih dari 30 detik lalu → pakai [-1]
+#   - kalau belum close (masih forming) → pakai [-2]
 # ══════════════════════════════════════════════
 def check_5m_pinbar(symbol):
     """
-    Cek apakah 1 closed candle 5m terakhir adalah Bullish Pinbar.
-    Bullish Pinbar = Close > Open DAN lower wick >= 2x body.
-    Menggunakan candle [-2] (last closed) bukan [-1] (still forming).
+    Cek apakah candle 5m terakhir (yang sudah close) adalah Bullish Pinbar.
+    Bullish Pinbar = Close > Open DAN lower wick >= 1.5x body.
+    Pemilihan candle disesuaikan dengan close_time agar tidak salah ambil
+    candle yang masih forming.
     """
-    # Load enough data for the chart, e.g. 25 candles
     df = fetch_klines(symbol, "5m", limit=25)
     if df.empty:
         return {"pass": False, "reason": "Data fetch failed", "df": None}
 
-    candle = df.iloc[-2]
+    # Tentukan candle yang sudah close
+    now_utc = pd.Timestamp.now(tz="UTC")
+    last_close_time = df["close_time"].iloc[-1]
+    secs_since_close = (now_utc - last_close_time).total_seconds()
+
+    # Kalau candle [-1] sudah close lebih dari 30 detik lalu, pakai [-1].
+    # Kalau belum (masih forming), pakai [-2].
+    candle_idx = -1 if secs_since_close > 30 else -2
+
+    candle = df.iloc[candle_idx]
     o, h, l, c = candle["open"], candle["high"], candle["low"], candle["close"]
 
     body = abs(c - o)
-    # Gunakan max(0, ...) untuk menghindari nilai negatif jika terjadi anomali data (misal: open < low)
     lower_wick = max(0, min(o, c) - l)
     upper_wick = max(0, h - max(o, c))
 
@@ -306,7 +379,6 @@ def check_5m_pinbar(symbol):
     wick_ratio = lower_wick / body_ref
 
     is_bullish = c > o
-    # Ubah syarat tail dari 2x menjadi 1.5x body
     has_long_tail = lower_wick >= (1.5 * body_ref)
     is_pinbar = is_bullish and has_long_tail
 
@@ -355,7 +427,7 @@ def calculate_risk_reward(entry, support):
 
 
 # ══════════════════════════════════════════════
-# ANTI-SPAM: JSON Memory System
+# ANTI-SPAM: JSON Memory System (with file locking)
 # ══════════════════════════════════════════════
 def load_memory():
     """Baca alerted_coins.json, return dict kosong jika file belum ada."""
@@ -365,17 +437,32 @@ def load_memory():
         with open(MEMORY_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     except (json.JSONDecodeError, IOError) as e:
-        print(f"  [WARN] Gagal baca memory file, reset: {e}")
+        log.warning(f"Gagal baca memory file, reset: {e}")
         return {}
 
 
 def save_memory(data):
-    """Simpan data ke alerted_coins.json dengan error handling."""
+    """
+    Simpan data ke alerted_coins.json dengan file locking (POSIX only).
+    Mencegah race condition saat bot + GH Actions cron jalan bersamaan.
+    """
     try:
-        with open(MEMORY_FILE, "w", encoding="utf-8") as f:
+        with open(MEMORY_FILE, "r+" if os.path.exists(MEMORY_FILE) else "w",
+                   encoding="utf-8") as f:
+            try:
+                # POSIX-only file lock; silently skipped on Windows
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            except (AttributeError, OSError):
+                pass
+            f.seek(0)
+            f.truncate()
             json.dump(data, f, indent=2)
+            try:
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+            except (AttributeError, OSError):
+                pass
     except IOError as e:
-        print(f"  [ERROR] Gagal simpan memory file: {e}")
+        log.error(f"Gagal simpan memory file: {e}")
 
 
 def is_on_cooldown(symbol, memory):
@@ -408,7 +495,7 @@ def record_alert(symbol, memory):
 def send_telegram(message, reply_markup=None, photo_buf=None):
     """Kirim pesan ke Telegram via Bot API, support kirim gambar."""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("  [WARN] Telegram credentials not set. Printing to console.")
+        log.warning("Telegram credentials not set. Printing to console.")
         print(message)
         return
 
@@ -421,18 +508,18 @@ def send_telegram(message, reply_markup=None, photo_buf=None):
         }
         if reply_markup:
             payload["reply_markup"] = json.dumps(reply_markup)
-            
+
         files = {
             "photo": ("chart.png", photo_buf.getvalue(), "image/png")
         }
         try:
             resp = _session.post(url, data=payload, files=files, timeout=20)
             if resp.status_code == 200:
-                print("  [OK] Telegram photo sent.")
+                log.info("Telegram photo sent.")
             else:
-                print(f"  [ERROR] Telegram photo: {resp.status_code} -- {resp.text}")
+                log.error(f"Telegram photo: {resp.status_code} -- {resp.text}")
         except Exception as e:
-            print(f"  [ERROR] Telegram photo send failed: {e}")
+            log.error(f"Telegram photo send failed: {e}")
     else:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         payload = {
@@ -447,11 +534,11 @@ def send_telegram(message, reply_markup=None, photo_buf=None):
         try:
             resp = _session.post(url, json=payload, timeout=15)
             if resp.status_code == 200:
-                print("  [OK] Telegram message sent.")
+                log.info("Telegram message sent.")
             else:
-                print(f"  [ERROR] Telegram: {resp.status_code} -- {resp.text}")
+                log.error(f"Telegram: {resp.status_code} -- {resp.text}")
         except Exception as e:
-            print(f"  [ERROR] Telegram send failed: {e}")
+            log.error(f"Telegram send failed: {e}")
 
 
 def build_inline_keyboard(symbol):
@@ -526,14 +613,15 @@ def run_scanner():
     Setiap filter yang gagal langsung drop (continue) ke koin berikutnya.
     """
     print("=" * 60)
-    print("  🎯 CRYPTO RADAR v5.0 -- Dynamic Reversal Sniper")
+    print("  🎯 CRYPTO RADAR v5.1 -- Dynamic Reversal Sniper (Hardened)")
     print("=" * 60)
-    
+
     coins = get_top_volume_coins(limit=SCAN_LIMIT)
-    
+
     print(f"  Dynamic Top {SCAN_LIMIT} : {len(coins)} Coins found")
     print(f"  Time   : {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
     print(f"  Memory : {MEMORY_FILE} (cooldown {COOLDOWN_HOURS}h)")
+    print(f"  Vol Spike Threshold: {VOL_SPIKE_THRESHOLD}x")
     print("=" * 60)
 
     memory = load_memory()

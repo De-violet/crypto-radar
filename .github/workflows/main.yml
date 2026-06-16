@@ -1,4 +1,4 @@
-name: Crypto Radar v4 — Multi-Timeframe Sniper
+name: Crypto Radar v5 — Dynamic Reversal Sniper
 
 on:
   schedule:
@@ -29,13 +29,17 @@ jobs:
       - name: 📦 Install Dependencies
         run: |
           pip install --upgrade pip
-          pip install requests pandas pandas-ta mplfinance matplotlib
+          pip install -r requirements.txt
 
       # ── Step 4: Run Radar Scanner ────────────────────
       - name: 🎯 Run Multi-Timeframe Sniper
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SCAN_LIMIT: ${{ vars.SCAN_LIMIT }}
+          VOL_SPIKE_THRESHOLD: ${{ vars.VOL_SPIKE_THRESHOLD }}
+          STOCH_OVERSOLD: ${{ vars.STOCH_OVERSOLD }}
+          COOLDOWN_HOURS: ${{ vars.COOLDOWN_HOURS }}
         run: python radar.py
 
       # ── Step 5: Smart Git Auto-Commit (Memory) ──────
