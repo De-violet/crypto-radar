@@ -17,9 +17,10 @@ preserved on the `legacy-telegram` branch (tag `v6.0-telegram-final`).
 - 🔥 **Telegram mode removed** — see `legacy-telegram` branch for backup
 - 🐍 **FastAPI backend** (`apps/api/main.py`) — REST + WebSocket API for the web frontend
 - 🎨 **Next.js 16 web frontend** (`web` branch) — violet luxury theme, deployed to Vercel
-- 🤖 **Discord bot embedded in FastAPI** — 1 container, 1 process, runs on Fly.io free tier
+- 🤗 **Hosted on HuggingFace Spaces** (free, 16GB RAM, no credit card required)
+- 🤖 **Discord bot embedded in FastAPI** — 1 container, 1 process
 - 🚀 **Auto-deploy from GitHub**:
-  - Push to `main` → Fly.io (Python backend + Discord bot)
+  - Push to `main` → HuggingFace Spaces (Python backend + Discord bot)
   - Push to `web` → Vercel (Next.js frontend)
 - 🔌 **Pluggable signal emitter** — `radar.register_signal_sink(fn)` lets Discord & Web register their own sinks
 - 🏗 **Modular architecture** — `main.py` exposes `bot` singleton importable by FastAPI
@@ -35,12 +36,12 @@ preserved on the `legacy-telegram` branch (tag `v6.0-telegram-final`).
                           │
               ┌───────────┴───────────┐
               ▼                       ▼
-         Fly.io (free 256MB)      Vercel (free)
-         • FastAPI /health        • Next.js 16 dashboard
-         • FastAPI /api/v1/*      • Violet theme
-         • Discord.py bot         • Supabase Auth (Phase 1)
-         • 1 container            • Auto-deploy from `web`
-         • Auto-deploy from `main`
+    HuggingFace Spaces (free)    Vercel (free)
+    • 16GB RAM, 2 vCPU           • Next.js 16 dashboard
+    • FastAPI /health            • Violet theme
+    • FastAPI /api/v1/*          • Supabase Auth (Phase 1)
+    • Discord.py bot             • Auto-deploy from `web`
+    • Auto-deploy from `main`
               │                       │
               └─────── HTTPS ─────────┘
                      ↕
@@ -49,6 +50,12 @@ preserved on the `legacy-telegram` branch (tag `v6.0-telegram-final`).
                 • Auth (Google/GitHub OAuth)
                 • Storage (for chart images)
 ```
+
+**Kenapa HuggingFace Spaces?**
+- ✅ Free 16GB RAM (Fly.io free hanya 256MB)
+- ✅ Tidak butuh kartu kredit (Fly.io wajib)
+- ✅ Always-on untuk traffic yang konsisten
+- ✅ Docker support penuh
 
 ---
 
@@ -73,10 +80,9 @@ crypto-radar/  (branch: main)
 ├── tests/                      # pytest tests (existing)
 ├── .github/workflows/
 │   ├── tests.yml               # Lint + tests + backtest validation
-│   └── fly-deploy.yml          # Auto-deploy main → Fly.io
+│   └── hf-sync.yml             # Auto-sync main → HuggingFace Spaces
 ├── .env.example                # Updated: no Telegram, added Supabase + API
-├── Dockerfile                  # Fly.io: 256MB, 1 process, FastAPI + Discord
-├── fly.toml                    # Fly.io config
+├── Dockerfile                  # HuggingFace Spaces: port 7860, non-root user
 ├── backtest.py                 # Backtest engine (existing)
 ├── keep_alive.py               # Legacy Flask keep-alive (still used by main.py standalone)
 ├── main.py                     # Discord bot entry — exposes `bot` singleton
@@ -140,10 +146,12 @@ See **[DEPLOY.md](./DEPLOY.md)** for the complete step-by-step guide.
 
 | Component | Branch | Hosting | Auto-deploy trigger |
 |---|---|---|---|
-| Python backend + Discord bot | `main` | Fly.io (free 256MB) | Push to `main` |
+| Python backend + Discord bot | `main` | HuggingFace Spaces (free 16GB) | Push to `main` |
 | Next.js web frontend | `web` | Vercel (free) | Push to `web` |
 | Database + Auth | – | Supabase (free 500MB) | – |
 | Domain DNS | – | Cloudflare (free) | – |
+
+**No credit card required** for any of the above.
 
 ---
 

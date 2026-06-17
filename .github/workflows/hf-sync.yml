@@ -1,0 +1,77 @@
+name: Sync to HuggingFace Spaces
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sync-to-hf:
+    name: 🤗 Sync to HuggingFace Spaces
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - name: 📥 Checkout GitHub repo (main branch, full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          lfs: true
+
+      - name: 🔍 Run lint + tests (gate before sync)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: 📦 Install deps
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: 🔍 Lint
+        run: ruff check .
+
+      - name: 🧪 Test
+        run: pytest tests/ -v --tb=short --maxfail=5
+
+      - name: 🤗 Push to HuggingFace Spaces
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          # Setup git for HF
+          git config --global user.email "De-violet@users.noreply.github.com"
+          git config --global user.name "De-violet"
+
+          # Add HF remote (token in URL — only for this command, not persisted)
+          # Replace YOUR_HF_USERNAME with your actual HF username (set as repo secret)
+          HF_USERNAME="${{ secrets.HF_USERNAME }}"
+          if [ -z "$HF_USERNAME" ]; then
+            echo "❌ HF_USERNAME secret not set"
+            exit 1
+          fi
+
+          # The HF Space repo name should match: https://huggingface.co/spaces/<username>/crypto-radar
+          git remote add hf "https://api:$HF_TOKEN@huggingface.co/spaces/$HF_USERNAME/crypto-radar" || \
+            git remote set-url hf "https://api:$HF_TOKEN@huggingface.co/spaces/$HF_USERNAME/crypto-radar"
+
+          # Push main → HF main (HF Spaces default branch)
+          # Force-push because HF Space starts with empty README.md that we overwrite
+          git push -f hf main:main
+
+          # Clean up: remove HF remote so token doesn't leak in .git/config
+          git remote remove hf
+
+          echo "✅ Synced to HuggingFace Spaces: https://huggingface.co/spaces/$HF_USERNAME/crypto-radar"
+
+      - name: ✅ Verify deployment
+        run: |
+          sleep 15
+          HF_USERNAME="${{ secrets.HF_USERNAME }}"
+          URL="https://${HF_USERNAME}-crypto-radar.hf.space/health"
+          echo "Health check: $URL"
+          curl -fsS "$URL" | python3 -m json.tool || \
+            echo "⚠️  Health check failed — check HuggingFace Space logs"
