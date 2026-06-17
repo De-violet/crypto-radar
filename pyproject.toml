@@ -6,15 +6,15 @@
 
 [project]
 name = "crypto-radar"
-version = "6.0.0"
-description = "Multi-strategy crypto sniper bot with Telegram + Discord modes"
+version = "7.0.0"
+description = "Multi-strategy crypto sniper bot with Discord + Web dashboard"
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.10"
 authors = [
     { name = "De-violet" },
 ]
-keywords = ["crypto", "trading-bot", "binance", "discord", "telegram", "backtest"]
+keywords = ["crypto", "trading-bot", "binance", "discord", "fastapi", "nextjs", "backtest"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Financial and Insurance Industry",
@@ -38,6 +38,10 @@ dependencies = [
     "matplotlib>=3.8.0,<4.0.0",
     "python-dotenv>=1.0.0,<2.0.0",
     "flask>=3.0.0,<4.0.0",
+    "fastapi>=0.110.0,<1.0.0",
+    "uvicorn[standard]>=0.27.0,<1.0.0",
+    "pydantic>=2.6.0,<3.0.0",
+    "supabase>=2.4.0,<3.0.0",
 ]
 
 [project.optional-dependencies]

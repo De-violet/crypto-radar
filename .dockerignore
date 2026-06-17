@@ -1,16 +1,15 @@
 # ══════════════════════════════════════════════
-# Crypto Radar — .dockerignore
-# Build context yang di-skip untuk image lebih kecil & build lebih cepat.
+# Crypto Radar v7.0 — .dockerignore
 # ══════════════════════════════════════════════
 
-# ── Secrets (JANGAN PERNAH masuk image) ────────
+# ── Secrets ──
 .env
 .env.local
 .env.*.local
 *.pem
 *.key
 
-# ── Python caches & build artifacts ────────────
+# ── Python caches & build artifacts ──
 __pycache__/
 *.py[cod]
 *$py.class
@@ -22,13 +21,13 @@ dist/
 .eggs/
 .installed.cfg
 
-# ── Virtualenvs ────────────────────────────────
+# ── Virtualenvs ──
 venv/
 .venv/
 env/
 ENV/
 
-# ── Test & CI artifacts ────────────────────────
+# ── Test & CI artifacts ──
 .pytest_cache/
 .ruff_cache/
 .coverage
@@ -36,7 +35,7 @@ coverage.xml
 htmlcov/
 tests/
 
-# ── Editor & OS junk ───────────────────────────
+# ── Editor & OS ──
 .idea/
 .vscode/
 *.swp
@@ -45,32 +44,37 @@ tests/
 .DS_Store
 Thumbs.db
 
-# ── Git & GitHub ───────────────────────────────
+# ── Git & GitHub ──
 .git/
 .github/
 .gitignore
 .gitattributes
 
 # ── Runtime memory (akan dibuat saat container jalan) ──
-# Catatan: alerted_coins.json sengaja di-IGNORE karena untuk Docker mode
-# lebih baik mount volume eksternal (lihat README → Docker section).
 alerted_coins.json
 posted_news.json
 posted_listings.json
+data/
 
-# ── Backtest output (volume mount point) ───────
+# ── Backtest output ──
 backtest_reports/
 
-# ── Logs ───────────────────────────────────────
+# ── Logs ──
 *.log
 logs/
 
-# ── Documentation (tidak perlu di image runtime) ──
+# ── Docs (tidak perlu di image runtime) ──
 README.md
 CHANGELOG.md
 CONTRIBUTING.md
 LICENSE
 
-# ── Dev-only configs ───────────────────────────
+# ── Dev configs ──
 requirements-dev.txt
-pyproject.toml
+
+# ── Next.js web (branch `web`, deploy terpisah di Vercel) ──
+apps/web/
+web/
+next/
+.next/
+node_modules/

@@ -1,15 +1,14 @@
 """
-CRYPTO RADAR v5.1 — Dynamic Reversal Sniper (Hardened Edition)
-Filter Bertingkat: 4H -> 1H -> 5m (Bottom Fishing)
-Anti-Spam Memory  |  Risk:Reward 1:2  |  Inline Keyboard | Auto Chart
+CRYPTO RADAR v7.0 — Multi-Strategy Sniper (Discord + Web Edition)
+Filter Bertingkat: 4H -> 1H -> 5m
+Anti-Spam Memory  |  Risk:Reward 1:2  |  Auto Chart | Signal Emitter
 
-Changes vs v5.0:
+Changes vs v6.0:
+- Telegram mode removed (use legacy-telegram branch for backup)
+- Signal emitter decoupled from notification backend (Discord + Web API ready)
 - Binance API geo-restriction workaround (multiple endpoints + data-api.binance.vision)
-- Volume spike threshold default raised to 1.5x (was 1.2x — too noisy)
 - Pinbar candle selection uses close_time verification (not blind iloc[-2])
-- Stablecoins list expanded (USDS, USDD, USDE, etc.)
 - matplotlib figure explicitly closed after savefig (memory leak fix)
-- Pinbar comment synced with code (1.5x, not 2x)
 - logging module replaces print() for structured logs
 - File locking on alerted_coins.json (fcntl on POSIX)
 """
@@ -44,8 +43,8 @@ log = logging.getLogger("crypto-radar")
 # ══════════════════════════════════════════════
 # CONFIGURATION
 # ══════════════════════════════════════════════
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+# Telegram mode has been removed in v7.0. Use Discord (cogs/) or Web API (apps/api/) instead.
+# Legacy Telegram code is preserved on the `legacy-telegram` branch / tag `v6.0-telegram-final`.
 
 # Binance endpoints — multiple fallbacks to bypass 451 geo-restriction on US IPs.
 # `data-api.binance.vision` is the public market-data mirror (no auth, no geo-block).
@@ -555,102 +554,69 @@ def record_alert(symbol, memory):
 
 
 # ══════════════════════════════════════════════
-# TELEGRAM NOTIFICATION (Inline Keyboard)
+# SIGNAL EMITTER — generic hook untuk Discord / Web / DB
 # ══════════════════════════════════════════════
-def send_telegram(message, reply_markup=None, photo_buf=None):
-    """Kirim pesan ke Telegram via Bot API, support kirim gambar."""
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        log.warning("Telegram credentials not set. Printing to console.")
-        print(message)
+# Pluggable signal sink. Default = log only. Discord bot & Web API can
+# register their own sinks via `register_signal_sink(...)`.
+_signal_sinks: list = []
+
+
+def register_signal_sink(sink):
+    """
+    Daftarkan callable yang akan dipanggil untuk setiap signal PASS.
+
+    Signature sink:
+        sink(symbol: str, signal: SignalResult, report: str, chart_buf: BytesIO | None)
+
+    Contoh:
+        # Discord bot mendaftarkan sink yang kirim embed ke channel
+        radar.register_signal_sink(my_discord_sink)
+
+        # Web API mendaftarkan sink yang simpan ke Supabase + emit SSE
+        radar.register_signal_sink(my_web_sink)
+    """
+    if sink not in _signal_sinks:
+        _signal_sinks.append(sink)
+        log.info(f"Signal sink registered: {getattr(sink, '__name__', sink)}")
+
+
+def unregister_signal_sink(sink):
+    """Hapus sink dari daftar."""
+    if sink in _signal_sinks:
+        _signal_sinks.remove(sink)
+
+
+def emit_signal(symbol, signal_result, report, chart_buf=None):
+    """
+    Broadcast signal ke semua sink yang terdaftar.
+    Failures di salah satu sink tidak mengganggu sink lainnya.
+    """
+    if not _signal_sinks:
+        log.info(f"[no-sink] Signal for {symbol}: {report[:100]}...")
         return
 
-    if photo_buf:
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
-        payload = {
-            "chat_id": TELEGRAM_CHAT_ID,
-            "caption": message,
-            "parse_mode": "HTML",
-        }
-        if reply_markup:
-            payload["reply_markup"] = json.dumps(reply_markup)
-
-        files = {
-            "photo": ("chart.png", photo_buf.getvalue(), "image/png")
-        }
+    for sink in _signal_sinks:
         try:
-            resp = _session.post(url, data=payload, files=files, timeout=20)
-            if resp.status_code == 200:
-                log.info("Telegram photo sent.")
-            else:
-                log.error(f"Telegram photo: {resp.status_code} -- {resp.text}")
+            sink(symbol, signal_result, report, chart_buf)
         except Exception as e:
-            log.error(f"Telegram photo send failed: {e}")
-    else:
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        payload = {
-            "chat_id": TELEGRAM_CHAT_ID,
-            "text": message,
-            "parse_mode": "HTML",
-            "disable_web_page_preview": True,
-        }
-        if reply_markup:
-            payload["reply_markup"] = json.dumps(reply_markup)
-
-        try:
-            resp = _session.post(url, json=payload, timeout=15)
-            if resp.status_code == 200:
-                log.info("Telegram message sent.")
-            else:
-                log.error(f"Telegram: {resp.status_code} -- {resp.text}")
-        except Exception as e:
-            log.error(f"Telegram send failed: {e}")
+            log.exception(f"Signal sink {sink} failed: {e}")
 
 
-def build_inline_keyboard(symbol):
-    """Buat inline keyboard dengan tombol link ke chart Binance dan TradingView."""
-    coin = symbol.replace("USDT", "")
-    return {
-        "inline_keyboard": [
-            [
-                {
-                    "text": "Binance Chart",
-                    "url": f"https://www.binance.com/en/trade/{coin}_USDT",
-                },
-                {
-                    "text": "TradingView",
-                    "url": f"https://www.tradingview.com/chart/?symbol=BINANCE:{symbol}",
-                },
-            ],
-            [
-                {
-                    "text": f"{coin} Detail -- CoinGecko",
-                    "url": f"https://www.coingecko.com/en/coins/{coin.lower()}",
-                },
-            ],
-        ],
-    }
-
-
-def build_report_from_signal(symbol, signal_result):
+def build_signal_report(symbol, signal_result):
     """
-    Buat format laporan Telegram dari SignalResult (multi-strategy aware).
+    Buat format laporan generic (plain text, bukan HTML Telegram) dari SignalResult.
+    Sink (Discord embed, Web SSE, DB) bisa reformat sesuai kebutuhan.
     """
     coin = symbol.replace("USDT", "")
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     s = signal_result
     rr = s.details.get("rr", {})
     strategy_label = {
-        "reversal": "REVERSAL / BOTTOM FISHING",
-        "breakout": "BREAKOUT / MOMENTUM",
-        "trend_follow": "TREND FOLLOW / PULLBACK",
-    }.get(s.strategy_name, s.strategy_name.upper())
-    hashtag = {
-        "reversal": "#Reversal #BottomFishing",
-        "breakout": "#Breakout #Momentum",
-        "trend_follow": "#TrendFollow #Pullback",
-    }.get(s.strategy_name, f"#{s.strategy_name}")
+        "reversal": "Reversal / Bottom Fishing",
+        "breakout": "Breakout / Momentum",
+        "trend_follow": "Trend Follow / Pullback",
+    }.get(s.strategy_name, s.strategy_name.title())
 
-    # Build filter checklist dari details dict
     checklist_lines = []
     for tf_key, tf_label in [("4h", "4H"), ("1h", "1H"), ("5m", "5m")]:
         tf_data = s.details.get(tf_key, {})
@@ -658,58 +624,36 @@ def build_report_from_signal(symbol, signal_result):
             continue
         status = tf_data.get("status", "")
         detail = tf_data.get("detail", "")
-        checklist_lines.append(f"  <b>{tf_label}</b>\n  {status}\n  {detail}")
-    checklist_block = "\n\n".join(checklist_lines)
+        checklist_lines.append(f"  {tf_label} | {status} | {detail}")
+    checklist_block = "\n".join(checklist_lines)
 
     report = (
-        f"<b>🎯 SNIPER SIGNAL -- {coin}/USDT</b>\n"
-        f"<code>------------------------------</code>\n\n"
-        f"<b>📋 STRATEGY: {strategy_label}</b>\n\n"
+        f"SNIPER SIGNAL — {coin}/USDT\n"
+        f"──────────────────────────────\n"
+        f"Strategy: {strategy_label}\n\n"
         f"{checklist_block}\n\n"
-        f"<code>------------------------------</code>\n"
-        f"<b>💰 EXECUTION PLAN (R:R 1:{s.risk_reward_ratio})</b>\n\n"
-        f"  Entry  : <code>{rr.get('entry', s.entry)}</code>\n"
-        f"  SL     : <code>{rr.get('sl', s.stop_loss)}</code>  (-{rr.get('risk_pct', 0)}%)\n"
-        f"  TP     : <code>{rr.get('tp', s.take_profit)}</code>  (+{rr.get('reward_pct', 0)}%)\n\n"
-        f"<code>------------------------------</code>\n"
-        f"<b>🟢 VERDICT: HIGH CONVICTION ENTRY</b>\n"
-        f"<i>{strategy_label}</i>\n"
+        f"──────────────────────────────\n"
+        f"EXECUTION PLAN (R:R 1:{s.risk_reward_ratio})\n"
+        f"  Entry  : {rr.get('entry', s.entry)}\n"
+        f"  SL     : {rr.get('sl', s.stop_loss)}  (-{rr.get('risk_pct', 0)}%)\n"
+        f"  TP     : {rr.get('tp', s.take_profit)}  (+{rr.get('reward_pct', 0)}%)\n\n"
+        f"──────────────────────────────\n"
+        f"VERDICT: HIGH CONVICTION ENTRY\n"
+        f"{strategy_label}\n"
         f"{now_str}\n"
-        f"<code>#{coin} {hashtag}</code>"
+        f"#{coin} #{s.strategy_name}"
     )
     return report
 
 
-def build_report(symbol, h4, h1, m5, rr):
-    """Legacy report builder (kept for backward compat)."""
+def build_external_links(symbol):
+    """URL shortcuts untuk Binance / TradingView / CoinGecko."""
     coin = symbol.replace("USDT", "")
-    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    report = (
-        f"<b>🎯 SNIPER SIGNAL -- {coin}/USDT</b>\n"
-        f"<code>------------------------------</code>\n\n"
-        f"<b>📋 STRATEGY CHECKLIST (REVERSAL)</b>\n\n"
-        f"  <b>4H | Support and Volume</b>\n"
-        f"  {h4['status']}\n"
-        f"  {h4['detail']}\n"
-        f"  Support: <code>{h4['support']}</code>  Jarak: <code>{h4['distance']}</code>\n\n"
-        f"  <b>1H | Stochastic (5,3,3)</b>\n"
-        f"  {h1['status']}\n"
-        f"  {h1['detail']}\n\n"
-        f"  <b>5m | Pinbar Entry</b>\n"
-        f"  {m5['status']}\n"
-        f"  {m5['detail']}\n\n"
-        f"<code>------------------------------</code>\n"
-        f"<b>💰 EXECUTION PLAN (R:R 1:{RISK_REWARD_RATIO})</b>\n\n"
-        f"  Entry  : <code>{rr['entry']}</code>\n"
-        f"  SL     : <code>{rr['sl']}</code>  (-{rr['risk_pct']}%)\n"
-        f"  TP     : <code>{rr['tp']}</code>  (+{rr['reward_pct']}%)\n\n"
-        f"<code>------------------------------</code>\n"
-        f"<b>🟢 VERDICT: HIGH CONVICTION ENTRY</b>\n"
-        f"<i>Reversal pattern detected</i>\n"
-        f"{now_str}\n"
-        f"<code>#{coin} #Reversal #BottomFishing</code>"
-    )
-    return report
+    return {
+        "binance": f"https://www.binance.com/en/trade/{coin}_USDT",
+        "tradingview": f"https://www.tradingview.com/chart/?symbol=BINANCE:{symbol}",
+        "coingecko": f"https://www.coingecko.com/en/coins/{coin.lower()}",
+    }
 
 
 # ══════════════════════════════════════════════
@@ -777,17 +721,16 @@ def run_scanner():
             print(f"PASS! Entry={result.entry} SL={result.stop_loss} TP={result.take_profit}")
 
             # Generate chart (5m) bila chart_df tersedia
-            photo_buf = None
+            chart_buf = None
             if result.chart_df is not None and not result.chart_df.empty:
                 print("  Generating chart...")
                 try:
-                    photo_buf = generate_chart(symbol, result.chart_df)
+                    chart_buf = generate_chart(symbol, result.chart_df)
                 except Exception as e:
                     log.error(f"Chart generation failed: {e}")
 
-            report = build_report_from_signal(symbol, result)
-            keyboard = build_inline_keyboard(symbol)
-            send_telegram(report, reply_markup=keyboard, photo_buf=photo_buf)
+            report = build_signal_report(symbol, result)
+            emit_signal(symbol, result, report, chart_buf=chart_buf)
             signals_found += 1
 
             memory = record_alert(memory_key, memory)
