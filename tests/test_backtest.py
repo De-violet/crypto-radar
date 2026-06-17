@@ -2,13 +2,13 @@
 Unit tests untuk backtest.py — verify trade simulation & metrics math.
 Pakai synthetic trades, no network.
 """
-from dataclasses import dataclass
-from datetime import datetime, timezone
 import pandas as pd
 import pytest
 
 from backtest import (
-    Trade, BacktestMetrics, compute_metrics, simulate_trade,
+    Trade,
+    compute_metrics,
+    simulate_trade,
 )
 
 
@@ -167,8 +167,8 @@ class TestComputeMetrics:
     def test_metrics_to_dict_serializable(self):
         trades = [self._make_trade("win", 100, 103)]
         m = compute_metrics("BTCUSDT", "reversal", 30, trades)
-        from dataclasses import asdict
         import json
+        from dataclasses import asdict
         d = asdict(m)
         # Must be JSON serializable
         json_str = json.dumps(d, default=str)

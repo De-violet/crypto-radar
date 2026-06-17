@@ -3,7 +3,6 @@ Unit tests for radar.py filter functions.
 Tests hanya pakai pure functions (_check_X_df) — no network calls.
 """
 import pandas as pd
-import pytest
 
 import radar
 
@@ -135,7 +134,6 @@ class TestCalculateRiskReward:
 # ══════════════════════════════════════════════
 class TestAntiSpamMemory:
     def test_is_on_cooldown_returns_false_for_new_symbol(self):
-        from datetime import datetime, timezone
         memory = {}
         assert radar.is_on_cooldown("BTCUSDT", memory) is False
 
@@ -146,7 +144,7 @@ class TestAntiSpamMemory:
         assert radar.is_on_cooldown("BTCUSDT", memory) is True
 
     def test_is_on_cooldown_returns_false_after_expiry(self):
-        from datetime import datetime, timezone, timedelta
+        from datetime import datetime, timedelta, timezone
         # Default COOLDOWN_HOURS = 4. Set alert 5 hours ago → expired.
         old_ts = (datetime.now(timezone.utc) - timedelta(hours=5)).timestamp()
         memory = {"BTCUSDT": {"last_alert": old_ts}}

@@ -1,0 +1,179 @@
+# ══════════════════════════════════════════════
+# Crypto Radar — pyproject.toml
+# Central config untuk ruff (lint), pytest (test), mypy (type-check).
+# Deps tetap di requirements.txt & requirements-dev.txt untuk backward compat.
+# ══════════════════════════════════════════════
+
+[project]
+name = "crypto-radar"
+version = "6.0.0"
+description = "Multi-strategy crypto sniper bot with Telegram + Discord modes"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+authors = [
+    { name = "De-violet" },
+]
+keywords = ["crypto", "trading-bot", "binance", "discord", "telegram", "backtest"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Financial and Insurance Industry",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Office/Business :: Financial :: Investment",
+]
+
+# Runtime dependencies mirror requirements.txt so `pip install .` works.
+# Versions kept in sync manually with requirements.txt.
+dependencies = [
+    "discord.py>=2.3.2,<3.0.0",
+    "aiohttp>=3.9.0,<4.0.0",
+    "requests>=2.31.0,<3.0.0",
+    "pandas>=2.1.0,<3.0.0",
+    "pandas-ta>=0.3.14b1",
+    "mplfinance>=0.12.10b0",
+    "matplotlib>=3.8.0,<4.0.0",
+    "python-dotenv>=1.0.0,<2.0.0",
+    "flask>=3.0.0,<4.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0,<9.0.0",
+    "pytest-cov>=4.1.0,<6.0.0",
+    "pytest-mock>=3.12.0,<4.0.0",
+    "ruff>=0.5.0,<1.0.0",
+    "mypy>=1.10.0,<2.0.0",
+    "types-requests>=2.31.0,<3.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/De-violet/crypto-radar"
+Repository = "https://github.com/De-violet/crypto-radar"
+Issues = "https://github.com/De-violet/crypto-radar/issues"
+
+# Scripts opsional: jalankan via `python radar.py` tetap cara utama.
+[project.scripts]
+crypto-radar = "radar:run_scanner"
+crypto-radar-backtest = "backtest:main"
+
+# ══════════════════════════════════════════════
+# RUFF — Linter & formatter
+# ══════════════════════════════════════════════
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+extend-exclude = [
+    ".venv",
+    "venv",
+    "__pycache__",
+    "build",
+    "dist",
+    "backtest_reports",
+]
+
+[tool.ruff.lint]
+# Enable rule families:
+#   E  = pycodestyle errors
+#   F  = pyflakes (unused imports, undefined names)
+#   W  = pycodestyle warnings
+#   I  = isort (import ordering)
+#   B  = bugbear (common gotchas)
+#   UP = pyupgrade (modernize syntax)
+#   SIM = simplify
+select = ["E", "F", "W", "I", "B", "UP", "SIM"]
+ignore = [
+    "E501",   # line-too-long (handled by formatter)
+    "B008",   # function call in default argument (Flask app = Flask('') OK)
+    "SIM108", # ternary instead of if-else (readability)
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Test files boleh pakai unused fixtures & asserts panjang
+"tests/**/*.py" = ["B017", "B015"]
+# main.py boleh unused arguments di event hooks
+"main.py" = ["B008"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["radar", "strategies", "cogs", "backtest", "keep_alive"]
+force-single-line = false
+combine-as-imports = true
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+
+# ══════════════════════════════════════════════
+# PYTEST
+# ══════════════════════════════════════════════
+[tool.pytest.ini_options]
+minversion = "7.4"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "-v",
+    "--strict-markers",
+    "--strict-config",
+    "--tb=short",
+    "--maxfail=5",
+    "--color=yes",
+]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests that hit external APIs",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::PendingDeprecationWarning",
+    "ignore::FutureWarning",
+]
+
+# ══════════════════════════════════════════════
+# COVERAGE
+# ══════════════════════════════════════════════
+[tool.coverage.run]
+source = ["radar", "strategies", "cogs", "backtest", "keep_alive", "main"]
+omit = [
+    "tests/*",
+    "**/__init__.py",
+    "**/setup.py",
+]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+    "@abstractmethod",
+]
+fail_under = 50  # current baseline; raise over time
+
+# ══════════════════════════════════════════════
+# MYPY (optional, tidak blocking CI)
+# ══════════════════════════════════════════════
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = false        # too noisy for pandas-heavy code
+warn_unused_configs = true
+disallow_untyped_defs = false  # enable gradually
+check_untyped_defs = true
+ignore_missing_imports = true  # pandas_ta, mplfinance, discord no stubs
+exclude = [
+    "tests/",
+    "build/",
+    "dist/",
+]
+
+[[tool.mypy.overrides]]
+module = ["pandas_ta.*", "mplfinance.*", "discord.*", "aiohttp.*"]
+ignore_missing_imports = true

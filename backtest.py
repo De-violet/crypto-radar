@@ -25,16 +25,13 @@ import argparse
 import json
 import os
 import sys
-import time
-from dataclasses import dataclass, field, asdict
-from datetime import datetime, timedelta, timezone
-from typing import Optional
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 
 import pandas as pd
 
 import radar
-from strategies import get_strategies, STRATEGY_REGISTRY
-
+from strategies import STRATEGY_REGISTRY, get_strategies
 
 # ══════════════════════════════════════════════
 # CONFIG
@@ -59,11 +56,11 @@ class Trade:
     entry_price: float
     stop_loss: float
     take_profit: float
-    exit_time: Optional[str] = None
-    exit_price: Optional[float] = None
-    outcome: Optional[str] = None  # "win", "loss", "timeout"
-    pnl_pct: Optional[float] = None
-    hold_candles: Optional[int] = None
+    exit_time: str | None = None
+    exit_price: float | None = None
+    outcome: str | None = None  # "win", "loss", "timeout"
+    pnl_pct: float | None = None
+    hold_candles: int | None = None
 
 
 @dataclass
@@ -121,7 +118,7 @@ def simulate_trade(
     entry_price: float,
     stop_loss: float,
     take_profit: float,
-) -> tuple[Optional[str], Optional[float], int, Optional[str]]:
+) -> tuple[str | None, float | None, int, str | None]:
     """
     Walk forward dari entry_idx+1 sampai kena SL atau TP (atau timeout).
     Returns: (outcome, exit_price, hold_candles, exit_time_str)
@@ -196,7 +193,7 @@ def run_backtest(
 
             try:
                 result = strategy.check_signal_at(dfs, current_time)
-            except Exception as e:
+            except Exception:
                 # Skip step kalau strategi error
                 continue
 

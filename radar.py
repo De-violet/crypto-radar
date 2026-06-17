@@ -14,6 +14,7 @@ Changes vs v5.0:
 - File locking on alerted_coins.json (fcntl on POSIX)
 """
 
+import contextlib
 import fcntl
 import io
 import json
@@ -437,10 +438,10 @@ def _check_5m_pinbar_df(df):
     candle_idx = -1 if secs_since_close > 30 else -2
 
     candle = df.iloc[candle_idx]
-    o, h, l, c = candle["open"], candle["high"], candle["low"], candle["close"]
+    o, h, low, c = candle["open"], candle["high"], candle["low"], candle["close"]
 
     body = abs(c - o)
-    lower_wick = max(0, min(o, c) - l)
+    lower_wick = max(0, min(o, c) - low)
     upper_wick = max(0, h - max(o, c))
 
     body_ref = max(body, 0.0001)
@@ -457,7 +458,7 @@ def _check_5m_pinbar_df(df):
         "pass": is_pinbar,
         "open": round(o, 4),
         "high": round(h, 4),
-        "low": round(l, 4),
+        "low": round(low, 4),
         "close": round(c, 4),
         "body": round(body, 6),
         "lower_wick": round(lower_wick, 6),
@@ -502,9 +503,9 @@ def load_memory():
     if not os.path.exists(MEMORY_FILE):
         return {}
     try:
-        with open(MEMORY_FILE, "r", encoding="utf-8") as f:
+        with open(MEMORY_FILE, encoding="utf-8") as f:
             return json.load(f)
-    except (json.JSONDecodeError, IOError) as e:
+    except (OSError, json.JSONDecodeError) as e:
         log.warning(f"Gagal baca memory file, reset: {e}")
         return {}
 
@@ -517,19 +518,15 @@ def save_memory(data):
     try:
         with open(MEMORY_FILE, "r+" if os.path.exists(MEMORY_FILE) else "w",
                    encoding="utf-8") as f:
-            try:
-                # POSIX-only file lock; silently skipped on Windows
+            # POSIX-only file lock; silently skipped on Windows
+            with contextlib.suppress(AttributeError, OSError):
                 fcntl.flock(f.fileno(), fcntl.LOCK_EX)
-            except (AttributeError, OSError):
-                pass
             f.seek(0)
             f.truncate()
             json.dump(data, f, indent=2)
-            try:
+            with contextlib.suppress(AttributeError, OSError):
                 fcntl.flock(f.fileno(), fcntl.LOCK_UN)
-            except (AttributeError, OSError):
-                pass
-    except IOError as e:
+    except OSError as e:
         log.error(f"Gagal simpan memory file: {e}")
 
 

@@ -19,6 +19,7 @@ import pandas as pd
 import pandas_ta as ta
 
 import radar
+
 from .base import BaseStrategy, SignalResult
 
 

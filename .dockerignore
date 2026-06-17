@@ -1,0 +1,76 @@
+# ══════════════════════════════════════════════
+# Crypto Radar — .dockerignore
+# Build context yang di-skip untuk image lebih kecil & build lebih cepat.
+# ══════════════════════════════════════════════
+
+# ── Secrets (JANGAN PERNAH masuk image) ────────
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# ── Python caches & build artifacts ────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+.Python
+build/
+dist/
+.eggs/
+.installed.cfg
+
+# ── Virtualenvs ────────────────────────────────
+venv/
+.venv/
+env/
+ENV/
+
+# ── Test & CI artifacts ────────────────────────
+.pytest_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+tests/
+
+# ── Editor & OS junk ───────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ── Git & GitHub ───────────────────────────────
+.git/
+.github/
+.gitignore
+.gitattributes
+
+# ── Runtime memory (akan dibuat saat container jalan) ──
+# Catatan: alerted_coins.json sengaja di-IGNORE karena untuk Docker mode
+# lebih baik mount volume eksternal (lihat README → Docker section).
+alerted_coins.json
+posted_news.json
+posted_listings.json
+
+# ── Backtest output (volume mount point) ───────
+backtest_reports/
+
+# ── Logs ───────────────────────────────────────
+*.log
+logs/
+
+# ── Documentation (tidak perlu di image runtime) ──
+README.md
+CHANGELOG.md
+CONTRIBUTING.md
+LICENSE
+
+# ── Dev-only configs ───────────────────────────
+requirements-dev.txt
+pyproject.toml

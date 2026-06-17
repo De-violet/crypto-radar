@@ -1,9 +1,10 @@
+import time
+from collections import OrderedDict
+
+import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands
-import aiohttp
-import time
-from collections import OrderedDict
 
 # Simple TTL cache (LRU + expiry). Avoid external deps.
 _CACHE_TTL = 60  # 60 detik
@@ -47,20 +48,22 @@ class CryptoCommands(commands.Cog):
             url = f"https://api.coingecko.com/api/v3/coins/{coin_id}?localization=false&tickers=false&market_data=true&community_data=false&developer_data=false&sparkline=false"
 
             try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as response:
-                        if response.status == 429:
-                            await interaction.followup.send(
-                                "⏳ CoinGecko rate limit tercapai. Coba lagi dalam 1 menit."
-                            )
-                            return
-                        if response.status != 200:
-                            await interaction.followup.send(
-                                f"❌ Koin `{coin}` tidak ditemukan (HTTP {response.status})."
-                            )
-                            return
-                        data = await response.json()
-                        _cache_set(f"search:{coin_id}", data)
+                async with (
+                    aiohttp.ClientSession() as session,
+                    session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as response,
+                ):
+                    if response.status == 429:
+                        await interaction.followup.send(
+                            "⏳ CoinGecko rate limit tercapai. Coba lagi dalam 1 menit."
+                        )
+                        return
+                    if response.status != 200:
+                        await interaction.followup.send(
+                            f"❌ Koin `{coin}` tidak ditemukan (HTTP {response.status})."
+                        )
+                        return
+                    data = await response.json()
+                    _cache_set(f"search:{coin_id}", data)
             except aiohttp.ClientError as e:
                 await interaction.followup.send(f"❌ Network error: `{e}`")
                 return
@@ -99,20 +102,22 @@ class CryptoCommands(commands.Cog):
             url = f"https://api.coingecko.com/api/v3/coins/{coin_id}?localization=false&tickers=false&market_data=false&community_data=true&developer_data=true&sparkline=false"
 
             try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as response:
-                        if response.status == 429:
-                            await interaction.followup.send(
-                                "⏳ CoinGecko rate limit tercapai. Coba lagi dalam 1 menit."
-                            )
-                            return
-                        if response.status != 200:
-                            await interaction.followup.send(
-                                f"❌ Koin `{coin}` tidak ditemukan (HTTP {response.status})."
-                            )
-                            return
-                        data = await response.json()
-                        _cache_set(f"info:{coin_id}", data)
+                async with (
+                    aiohttp.ClientSession() as session,
+                    session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as response,
+                ):
+                    if response.status == 429:
+                        await interaction.followup.send(
+                            "⏳ CoinGecko rate limit tercapai. Coba lagi dalam 1 menit."
+                        )
+                        return
+                    if response.status != 200:
+                        await interaction.followup.send(
+                            f"❌ Koin `{coin}` tidak ditemukan (HTTP {response.status})."
+                        )
+                        return
+                    data = await response.json()
+                    _cache_set(f"info:{coin_id}", data)
             except aiohttp.ClientError as e:
                 await interaction.followup.send(f"❌ Network error: `{e}`")
                 return

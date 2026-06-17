@@ -10,11 +10,12 @@ Usage:
     # Get all enabled strategies (controlled by env var STRATEGIES)
     active = get_strategies()  # reads STRATEGIES env, comma-separated
 """
-from .base import BaseStrategy, SignalResult
-from .reversal import ReversalStrategy
-from .breakout import BreakoutStrategy
-from .trend_follow import TrendFollowStrategy
 import os
+
+from .base import BaseStrategy, SignalResult
+from .breakout import BreakoutStrategy
+from .reversal import ReversalStrategy
+from .trend_follow import TrendFollowStrategy
 
 # Registry: name -> class
 STRATEGY_REGISTRY: dict[str, type[BaseStrategy]] = {

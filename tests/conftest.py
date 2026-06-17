@@ -2,7 +2,6 @@
 Pytest fixtures shared across test modules.
 """
 import sys
-import os
 from pathlib import Path
 
 import pandas as pd

@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Optional
 
 import pandas as pd
 
@@ -20,13 +19,13 @@ class SignalResult:
     """Hasil evaluasi sebuah strategi untuk satu symbol/step."""
     strategy_name: str
     passed: bool
-    entry: Optional[float] = None
-    stop_loss: Optional[float] = None
-    take_profit: Optional[float] = None
-    support: Optional[float] = None           # level acuan untuk SL
+    entry: float | None = None
+    stop_loss: float | None = None
+    take_profit: float | None = None
+    support: float | None = None           # level acuan untuk SL
     direction: str = "long"                    # "long" atau "short" (future-proof)
     details: dict = field(default_factory=dict)
-    chart_df: Optional[pd.DataFrame] = None    # untuk chart generation di live mode
+    chart_df: pd.DataFrame | None = None    # untuk chart generation di live mode
     reason: str = ""                           # kalau fail, kenapa
 
 
