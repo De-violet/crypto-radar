@@ -31,13 +31,11 @@ class SignalResult:
 
 class BaseStrategy(ABC):
     """
-    Abstract base untuk semua strategi.
+    Abstract base untuk semua strategi scanner Telegram.
 
     Subclass wajib implement:
       - name: identifier string (unik)
-      - check_signal(symbol) -> SignalResult (live mode)
-      - check_signal_at(dfs, current_time) -> SignalResult (backtest mode)
-      - required_lookback() -> dict[tf, int] (candle count per TF yang dibutuhkan)
+      - check_signal(symbol) -> SignalResult
     """
     name: str = "base"
     direction: str = "long"
@@ -47,23 +45,6 @@ class BaseStrategy(ABC):
     @abstractmethod
     def check_signal(self, symbol: str) -> SignalResult:
         """Live mode: fetch fresh data via radar.fetch_klines, evaluate."""
-        ...
-
-    @abstractmethod
-    def check_signal_at(
-        self, dfs: dict, current_time: pd.Timestamp
-    ) -> SignalResult:
-        """
-        Backtest mode: evaluate strategy at `current_time` using pre-fetched
-        DataFrames in `dfs` (keyed by timeframe, e.g. {"4h": df_4h, ...}).
-        Strategy should slice dfs[tf].loc[:current_time] to simulate "as of
-        that moment" data.
-        """
-        ...
-
-    @abstractmethod
-    def required_lookback(self) -> dict:
-        """Return {"4h": 30, "1h": 50, "5m": 25} etc."""
         ...
 
     def calculate_rr(self, entry: float, reference: float) -> dict:

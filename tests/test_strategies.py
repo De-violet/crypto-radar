@@ -72,49 +72,39 @@ class TestBaseStrategyRR:
 # Reversal Strategy
 # ══════════════════════════════════════════════
 class TestReversalStrategy:
-    def test_pass_when_all_filters_align(self, sample_4h_df, sample_1h_df, sample_5m_pinbar_df):
+    def test_pass_when_all_filters_align(self, monkeypatch, sample_5m_pinbar_df):
         s = ReversalStrategy()
-        dfs = {"4h": sample_4h_df, "1h": sample_1h_df, "5m": sample_5m_pinbar_df}
-        # Use last close_time of 5m as "current_time"
-        current_time = sample_5m_pinbar_df["close_time"].iloc[-1]
-        result = s.check_signal_at(dfs, current_time)
+        monkeypatch.setattr("radar.check_4h_support_volume", lambda sym: {
+            "pass": True, "support": 48000.0, "reason": "Support bounce",
+        })
+        monkeypatch.setattr("radar.check_1h_stochastic", lambda sym: {
+            "pass": True, "k": 15.0, "d": 18.0, "reason": "Oversold",
+        })
+        monkeypatch.setattr("radar.check_5m_pinbar", lambda sym: {
+            "pass": True, "close": 50000.0, "df": sample_5m_pinbar_df, "reason": "Pinbar",
+        })
+        result = s.check_signal("BTCUSDT")
 
         assert result.passed
         assert result.strategy_name == "reversal"
-        assert result.entry is not None
+        assert result.entry == 50000.0
         assert result.stop_loss is not None
         assert result.take_profit is not None
         assert result.take_profit > result.entry > result.stop_loss
 
-    def test_fail_when_pinbar_missing(self, sample_4h_df, sample_1h_df, sample_5m_no_pinbar_df):
+    def test_fail_when_pinbar_missing(self, monkeypatch):
         s = ReversalStrategy()
-        dfs = {"4h": sample_4h_df, "1h": sample_1h_df, "5m": sample_5m_no_pinbar_df}
-        current_time = sample_5m_no_pinbar_df["close_time"].iloc[-1]
-        result = s.check_signal_at(dfs, current_time)
+        monkeypatch.setattr("radar.check_4h_support_volume", lambda sym: {"pass": True, "support": 48000.0})
+        monkeypatch.setattr("radar.check_1h_stochastic", lambda sym: {"pass": True, "k": 15.0})
+        monkeypatch.setattr("radar.check_5m_pinbar", lambda sym: {"pass": False, "reason": "No pinbar"})
+        result = s.check_signal("BTCUSDT")
         assert not result.passed
 
-    def test_fail_when_4h_filter_fails(self, sample_1h_df, sample_5m_pinbar_df):
+    def test_fail_when_4h_filter_fails(self, monkeypatch):
         s = ReversalStrategy()
-        # 4H df dengan volume normal (no spike)
-        base_time = pd.Timestamp("2026-06-01 00:00", tz="UTC")
-        times = pd.date_range(base_time, periods=30, freq="4h")
-        closes = [50000] * 30
-        df_4h = pd.DataFrame({
-            "open_time": times, "open": closes, "high": [c + 100 for c in closes],
-            "low": [c - 100 for c in closes], "close": closes, "volume": [1000] * 30,
-            "close_time": times + pd.Timedelta("4h"),
-            "quote_vol": [1000]*30, "trades": [1000]*30,
-            "taker_buy_base": [1000]*30, "taker_buy_quote": [1000]*30, "ignore": [None]*30,
-        })
-        dfs = {"4h": df_4h, "1h": sample_1h_df, "5m": sample_5m_pinbar_df}
-        current_time = sample_5m_pinbar_df["close_time"].iloc[-1]
-        result = s.check_signal_at(dfs, current_time)
+        monkeypatch.setattr("radar.check_4h_support_volume", lambda sym: {"pass": False, "reason": "Below support"})
+        result = s.check_signal("BTCUSDT")
         assert not result.passed
-
-    def test_required_lookback(self):
-        s = ReversalStrategy()
-        lb = s.required_lookback()
-        assert lb == {"4h": 30, "1h": 50, "5m": 25}
 
 
 # ══════════════════════════════════════════════
@@ -194,10 +184,6 @@ class TestBreakoutStrategy:
         assert result["pass"]
         assert result["vol_ratio"] >= 1.5
 
-    def test_required_lookback(self):
-        s = BreakoutStrategy()
-        assert s.required_lookback() == {"4h": 60, "1h": 50, "5m": 30}
-
 
 # ══════════════════════════════════════════════
 # Trend-Follow Strategy
@@ -232,11 +218,6 @@ class TestTrendFollowStrategy:
         })
         result = s._check_4h_trend(df)
         assert not result["pass"]
-
-    def test_required_lookback(self):
-        s = TrendFollowStrategy()
-        lb = s.required_lookback()
-        assert lb == {"4h": 220, "1h": 100, "5m": 50}
 
 
 # ══════════════════════════════════════════════

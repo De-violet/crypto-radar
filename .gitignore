@@ -8,14 +8,9 @@
 *.key
 
 # ══════════════════════════════════════════════
-# RUNTIME MEMORY (auto-generated, tidak perlu commit)
+# RUNTIME MEMORY (auto-generated, jangan di-commit)
 # ══════════════════════════════════════════════
-# NOTE: `alerted_coins.json` sengaja TIDAK di-ignore karena
-# di-auto-commit oleh GitHub Actions untuk persistence antar run.
-# Kalau lu mau ignore (misalnya run local aja), uncomment baris di bawah.
-# alerted_coins.json
-posted_news.json
-posted_listings.json
+alerted_coins.json
 
 # ══════════════════════════════════════════════
 # PYTHON

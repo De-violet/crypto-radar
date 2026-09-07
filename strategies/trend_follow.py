@@ -29,9 +29,6 @@ class TrendFollowStrategy(BaseStrategy):
     risk_reward_ratio = 2.0
     stop_loss_pct = 1.0
 
-    def required_lookback(self) -> dict:
-        return {"4h": 220, "1h": 100, "5m": 50}
-
     # ───────────────────────────────────────────────
     # Filter helpers (pure)
     # ───────────────────────────────────────────────
@@ -139,19 +136,6 @@ class TrendFollowStrategy(BaseStrategy):
         df_4h = radar.fetch_klines(symbol, "4h", limit=220)
         df_1h = radar.fetch_klines(symbol, "1h", limit=100)
         df_5m = radar.fetch_klines(symbol, "5m", limit=50)
-        return self._evaluate(df_4h, df_1h, df_5m)
-
-    def check_signal_at(self, dfs: dict, current_time: pd.Timestamp) -> SignalResult:
-        df_4h = dfs.get("4h")
-        df_1h = dfs.get("1h")
-        df_5m = dfs.get("5m")
-        if df_4h is None or df_1h is None or df_5m is None:
-            return SignalResult(strategy_name=self.name, passed=False, reason="Missing TF data")
-
-        df_4h = df_4h.loc[df_4h["close_time"] <= current_time]
-        df_1h = df_1h.loc[df_1h["close_time"] <= current_time]
-        df_5m = df_5m.loc[df_5m["close_time"] <= current_time]
-
         return self._evaluate(df_4h, df_1h, df_5m)
 
     def _evaluate(self, df_4h, df_1h, df_5m) -> SignalResult:
