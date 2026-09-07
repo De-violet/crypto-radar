@@ -25,9 +25,8 @@ RUN pip install --no-cache-dir --upgrade pip \
 # Salin kode aplikasi
 COPY . .
 
-# Buat folder laporan backtest dan pastikan file memory siap
-RUN mkdir -p /app/backtest_reports \
-    && touch /app/alerted_coins.json
+# Pastikan file memory anti-spam siap
+RUN touch /app/alerted_coins.json
 
 # Environment variables dasar
 ENV PYTHONUNBUFFERED=1 \

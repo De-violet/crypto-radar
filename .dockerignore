@@ -56,9 +56,6 @@ posted_news.json
 posted_listings.json
 data/
 
-# ── Backtest output ──
-backtest_reports/
-
 # ── Logs ──
 *.log
 logs/

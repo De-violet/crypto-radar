@@ -1,6 +1,5 @@
 # 🎯 Crypto Radar v8.0 — Multi-Strategy Sniper (Telegram Edition)
 
-[![CI Tests](https://github.com/De-violet/crypto-radar/actions/workflows/tests.yml/badge.svg)](https://github.com/De-violet/crypto-radar/actions/workflows/tests.yml)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Telegram Bot](https://img.shields.io/badge/Telegram-Bot%20API-2CA5E0?logo=telegram&logoColor=white)](https://core.telegram.org/bots/api)
@@ -22,7 +21,6 @@
   - [2. Clone & Siapkan Environment](#2-clone--siapkan-environment)
   - [3. Jalankan Aplikasi](#3-jalankan-aplikasi)
 - [Deployment 24/7](#-deployment-247)
-- [Mesin Backtest Terintegrasi](#-mesin-backtest-terintegrasi)
 - [Referensi Konfigurasi (.env)](#-referensi-konfigurasi-env)
 - [Disclaimer Risiko](#-disclaimer-risiko)
 
@@ -82,7 +80,6 @@
 - 🔘 **One-Click Trading Buttons**: Tombol inline menuju Binance Chart, TradingView, dan CoinGecko pada setiap notifikasi sinyal.
 - 🛡 **Anti-Spam Memory**: Cooldown per koin & strategi dengan POSIX file locking (`fcntl`) untuk mencegah alert ganda saat restart atau race condition.
 - 🌐 **Anti Geo-Block Failover**: Menggunakan `data-api.binance.vision` dan fallback endpoint resmi lainnya sehingga dapat dijalankan dari IP mana pun (termasuk server US) tanpa batasan HTTP 451.
-- 📈 **Standalone Backtest CLI**: Uji performa strategi di data historis (Win Rate, Profit Factor, Drawdown) sebelum dipakai live.
 
 ---
 
@@ -220,34 +217,7 @@ sudo systemctl enable --now crypto-radar
 sudo journalctl -u crypto-radar -f
 ```
 
-### Opsi 3: Serverless GitHub Actions Cron (100% Gratis Tanpa Server)
 
-Workflow bawaan `.github/workflows/scanner.yml` siap digunakan:
-1. Masuk ke tab **Settings** → **Secrets and variables** → **Actions** di repo GitHub Anda.
-2. Tambahkan Secret:
-   - `TELEGRAM_BOT_TOKEN`
-   - `TELEGRAM_CHAT_ID`
-3. Scanner akan berjalan otomatis setiap 30 menit dan mengirim notifikasi jika sinyal terdeteksi!
-
----
-
-## 📊 Mesin Backtest Terintegrasi
-
-Uji akurasi strategi pada data historis Binance:
-
-```bash
-# Uji seluruh strategi pada BTCUSDT selama 30 hari terakhir
-python backtest.py --symbol BTCUSDT --days 30 --strategy all
-
-# Uji strategi Reversal pada ETHUSDT selama 14 hari
-python backtest.py --symbol ETHUSDT --days 14 --strategy reversal
-```
-
-Output berupa metrik kinerja:
-- Total Trade & Win Rate (%)
-- Profit Factor
-- Maximum Drawdown (%)
-- Rata-rata Durasi Hold Candle
 
 ---
 

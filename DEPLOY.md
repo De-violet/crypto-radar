@@ -12,7 +12,6 @@ Pilih metode yang paling sesuai dengan kebutuhan Anda:
 |---|---|---|---|
 | **1. Docker Compose** | Murah ($3–5/bln) | Sangat Mudah ⭐ | VPS Linux (Ubuntu / Debian) |
 | **2. Systemd Service** | Murah ($3–5/bln) | Mudah ⭐⭐ | VPS Linux (Ubuntu / Debian) |
-| **3. Serverless GitHub Actions** | **Gratis ($0)** | Sangat Mudah ⭐ | Tanpa Server (Pakai GitHub) |
 
 ---
 
@@ -128,29 +127,6 @@ sudo systemctl status crypto-radar
 sudo journalctl -u crypto-radar -f
 ```
 
----
-
-## ☁️ Metode 3: Serverless GitHub Actions Cron (100% Gratis)
-
-Jika Anda belum memiliki VPS, Anda bisa memanfaatkan cron bawaan GitHub Actions untuk memindai pasar setiap 30 menit secara gratis.
-
-### Langkah 1: Fork atau Push Repository ke Akun GitHub Anda
-Pastikan repository Anda berada di akun GitHub Anda (Private atau Public).
-
-### Langkah 2: Tambahkan GitHub Secrets
-1. Buka repo Anda di GitHub.
-2. Masuk ke **Settings** → **Secrets and variables** → **Actions**.
-3. Klik **New repository secret**:
-   - `TELEGRAM_BOT_TOKEN`: Token bot Telegram Anda dari `@BotFather`.
-   - `TELEGRAM_CHAT_ID`: Chat ID Telegram Anda.
-
-### Langkah 3: Aktifkan Workflow
-1. Masuk ke tab **Actions** di GitHub.
-2. Klik workflow **Serverless Market Scanner (Cron)** di sidebar kiri.
-3. Klik tombol **Enable workflow** (jika dalam status disabled).
-4. Anda dapat mengklik **Run workflow** untuk uji coba instan pertama kali!
-
-Workflow `.github/workflows/scanner.yml` akan berjalan setiap 30 menit, mengeksekusi `python main.py --once`, dan menyimpan memori anti-spam secara otomatis ke repository.
 
 ---
 

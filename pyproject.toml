@@ -14,7 +14,7 @@ requires-python = ">=3.10"
 authors = [
     { name = "De-violet" },
 ]
-keywords = ["crypto", "trading-bot", "binance", "telegram", "signals", "backtest"]
+keywords = ["crypto", "trading-bot", "binance", "telegram", "signals"]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Financial and Insurance Industry",
@@ -54,7 +54,6 @@ Issues = "https://github.com/De-violet/crypto-radar/issues"
 [project.scripts]
 crypto-radar = "radar:run_scanner"
 crypto-radar-bot = "main:main"
-crypto-radar-backtest = "backtest:main"
 
 # ══════════════════════════════════════════════
 # RUFF — Linter & formatter
@@ -68,7 +67,6 @@ extend-exclude = [
     "__pycache__",
     "build",
     "dist",
-    "backtest_reports",
 ]
 
 [tool.ruff.lint]
@@ -82,7 +80,7 @@ ignore = [
 "tests/**/*.py" = ["B017", "B015"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["radar", "strategies", "backtest", "main"]
+known-first-party = ["radar", "strategies", "ai_analyst", "main"]
 force-single-line = false
 combine-as-imports = true
 
@@ -122,7 +120,7 @@ filterwarnings = [
 # COVERAGE
 # ══════════════════════════════════════════════
 [tool.coverage.run]
-source = ["radar", "strategies", "backtest", "main"]
+source = ["radar", "strategies", "ai_analyst", "main"]
 omit = [
     "tests/*",
     "**/__init__.py",

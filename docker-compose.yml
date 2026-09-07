@@ -6,9 +6,8 @@ services:
     env_file:
       - .env
     volumes:
-      # Persistensi data anti-spam dan laporan backtest
+      # Persistensi data anti-spam
       - ./alerted_coins.json:/app/alerted_coins.json
-      - ./backtest_reports:/app/backtest_reports
     logging:
       driver: "json-file"
       options:
