@@ -174,3 +174,88 @@ class TestStablecoinFiltering:
     def test_stablecoin_blacklist_includes_leveraged_tokens(self):
         assert "BTCUPUSDT" in radar.STABLECOIN_SYMBOLS
         assert "BTCDOWNUSDT" in radar.STABLECOIN_SYMBOLS
+
+
+# ══════════════════════════════════════════════
+# Telegram integration & formatting
+# ══════════════════════════════════════════════
+class TestTelegramIntegration:
+    def test_build_inline_keyboard(self):
+        keyboard = radar.build_inline_keyboard("BTCUSDT")
+        assert "inline_keyboard" in keyboard
+        rows = keyboard["inline_keyboard"]
+        assert len(rows) == 2
+        assert "binance.com" in rows[0][0]["url"]
+        assert "tradingview.com" in rows[0][1]["url"]
+        assert "coingecko.com" in rows[1][0]["url"]
+
+    def test_build_telegram_report(self):
+        from strategies.base import SignalResult
+        result = SignalResult(
+            strategy_name="reversal",
+            passed=True,
+            entry=50000.0,
+            stop_loss=48000.0,
+            take_profit=54000.0,
+            details={
+                "4h": {"status": "SUPPORT BOUNCE + VOL", "detail": "Bounce tested"},
+                "1h": {"status": "OVERSOLD", "detail": "K=15.0"},
+                "5m": {"status": "BULLISH PINBAR", "detail": "Tail 2.0x body"},
+                "rr": {"entry": 50000.0, "sl": 48000.0, "tp": 54000.0, "risk_pct": 4.0, "reward_pct": 8.0},
+            },
+        )
+        report = radar.build_telegram_report("BTCUSDT", result)
+        assert "BTC/USDT" in report
+        assert "REVERSAL" in report
+        assert "50000.0" in report
+        assert "48000.0" in report
+        assert "54000.0" in report
+        assert "#BTC" in report
+
+    def test_build_telegram_report_with_ai_val(self):
+        from strategies.base import SignalResult
+        from ai_analyst import AIValidationResult
+        result = SignalResult(
+            strategy_name="breakout",
+            passed=True,
+            entry=100.0,
+            stop_loss=98.5,
+            take_profit=103.0,
+            details={"rr": {"entry": 100.0, "sl": 98.5, "tp": 103.0, "risk_pct": 1.5, "reward_pct": 3.0}},
+        )
+        ai_val = AIValidationResult(
+            approved=True,
+            score=85,
+            stoch_1h_k=22.0,
+            stoch_1h_d=20.0,
+            stoch_status="MOMENTUM_HEALTHY",
+            stoch_crossover="Bullish Golden Cross",
+            verdict="APPROVED",
+            reason="Volume spike kuat dan Golden Cross Stochastic (5,3,3)",
+            ai_commentary="Setup momentum ideal.",
+        )
+        report = radar.build_telegram_report("SOLUSDT", result, ai_val=ai_val)
+        assert "APPROVED" in report
+        assert "85/100" in report
+        assert "Stoch (5,3,3)" in report
+        assert "22.0" in report
+        assert "Bullish Golden Cross" in report
+        assert "Volume spike" in report
+
+    def test_send_telegram_dry_without_token(self, monkeypatch, capsys):
+        monkeypatch.setattr(radar, "TELEGRAM_BOT_TOKEN", "")
+        monkeypatch.setattr(radar, "TELEGRAM_CHAT_ID", "")
+        success = radar.send_telegram("Test message")
+        assert success is False
+        captured = capsys.readouterr()
+        assert "Test message" in captured.out
+
+    def test_send_telegram_success(self, monkeypatch):
+        class MockResponse:
+            status_code = 200
+            text = "ok"
+
+        monkeypatch.setattr(radar._session, "post", lambda url, **kwargs: MockResponse())
+        success = radar.send_telegram("Hello", token="test_token", chat_id="12345")
+        assert success is True
+

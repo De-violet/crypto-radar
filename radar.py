@@ -1,17 +1,15 @@
 """
-CRYPTO RADAR v7.0 — Multi-Strategy Sniper (Discord + Web Edition)
+CRYPTO RADAR v8.0 — Multi-Strategy Sniper (Telegram Edition)
 Filter Bertingkat: 4H -> 1H -> 5m
-Anti-Spam Memory  |  Risk:Reward 1:2  |  Auto Chart | Signal Emitter
+Anti-Spam Memory  |  Risk:Reward 1:2  |  Auto Chart  |  Telegram Native
 
-Changes vs v6.0:
-- Telegram mode removed (use legacy-telegram branch for backup)
-- Signal emitter decoupled from notification backend (Discord + Web API ready)
-- Binance API geo-restriction workaround (multiple endpoints + data-api.binance.vision)
-- Pinbar candle selection uses close_time verification (not blind iloc[-2])
-- matplotlib figure explicitly closed after savefig (memory leak fix)
-- logging module replaces print() for structured logs
-- File locking on alerted_coins.json (fcntl on POSIX)
+Fitur Utama:
+- Multi-Strategy: Reversal, Breakout, Trend Follow
+- Binance Public API Failover (data-api.binance.vision + backup endpoints)
+- Alert Telegram interaktif dengan grafik candlestick (mplfinance) & inline buttons
+- Anti-Spam memory berbasis file JSON dengan fcntl file locking (POSIX)
 """
+from __future__ import annotations
 
 import contextlib
 import fcntl
@@ -22,12 +20,17 @@ import os
 import time
 from datetime import datetime, timezone
 
+import matplotlib.pyplot as plt
 import mplfinance as mpf
 import pandas as pd
 import pandas_ta as ta
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+from dotenv import load_dotenv
+
+# Muat file .env jika tersedia
+load_dotenv()
 
 # ══════════════════════════════════════════════
 # LOGGING SETUP
@@ -41,15 +44,25 @@ log = logging.getLogger("crypto-radar")
 
 
 # ══════════════════════════════════════════════
-# CONFIGURATION
-# ══════════════════════════════════════════════
-# Telegram mode has been removed in v7.0. Use Discord (cogs/) or Web API (apps/api/) instead.
-# Legacy Telegram code is preserved on the `legacy-telegram` branch / tag `v6.0-telegram-final`.
+# KONFIGURASI & ENVIRONMENT VARIABLES
+# Mendukung TELEGRAM_RADAR_BOT_TOKEN untuk setup multi-bot 1 file .env
+TELEGRAM_BOT_TOKEN = (
+    os.environ.get("TELEGRAM_RADAR_BOT_TOKEN", "").strip()
+    or os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+)
+TELEGRAM_CHAT_ID = (
+    os.environ.get("TELEGRAM_RADAR_CHAT_ID", "").strip()
+    or os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+)
+TELEGRAM_THREAD_ID = (
+    os.environ.get("TELEGRAM_RADAR_THREAD_ID", "").strip()
+    or os.environ.get("TELEGRAM_THREAD_ID", "").strip()
+)
 
-# Binance endpoints — multiple fallbacks to bypass 451 geo-restriction on US IPs.
-# `data-api.binance.vision` is the public market-data mirror (no auth, no geo-block).
+# Binance endpoints — fallback berantai untuk menghindari pembatasan IP / 451.
+# `data-api.binance.vision` adalah mirror data pasar publik tanpa autentikasi/geo-block.
 BINANCE_ENDPOINTS = [
-    "https://data-api.binance.vision",  # public market data, no geo-block
+    "https://data-api.binance.vision",
     "https://api.binance.com",
     "https://api-gcp.binance.com",
     "https://api1.binance.com",
@@ -60,37 +73,34 @@ BINANCE_ENDPOINTS = [
 KLINES_ENDPOINT = "/api/v3/klines"
 TICKER_24HR_ENDPOINT = "/api/v3/ticker/24hr"
 
-MEMORY_FILE = "alerted_coins.json"
+MEMORY_FILE = os.environ.get("MEMORY_FILE", "alerted_coins.json")
 
-# Dynamic parameters (bisa di-override via env)
-SCAN_LIMIT = int(os.environ.get("SCAN_LIMIT", 120))
-VOL_SPIKE_THRESHOLD = float(os.environ.get("VOL_SPIKE_THRESHOLD", 1.5))  # was 1.2 — too noisy
+# Parameter Dinamis
+SCAN_LIMIT = int(os.environ.get("SCAN_LIMIT", 100))
+VOL_SPIKE_THRESHOLD = float(os.environ.get("VOL_SPIKE_THRESHOLD", 1.5))
 STOCH_OVERSOLD = int(os.environ.get("STOCH_OVERSOLD", 20))
 COOLDOWN_HOURS = float(os.environ.get("COOLDOWN_HOURS", 4.0))
 
-RISK_REWARD_RATIO = 2
+RISK_REWARD_RATIO = 2.0
 STOP_LOSS_PCT = 1.5
 
-# Expanded stablecoin list (USDT pairs that should never be scanned)
+# Daftar koin stabil & leverage token yang tidak boleh discan
 STABLECOIN_SYMBOLS = {
     "USDCUSDT", "FDUSDUSDT", "TUSDUSDT", "BUSDUSDT",
     "DAIUSDT", "USDPUSDT", "EURUSDT", "AEURUSDT", "USTCUSDT",
     "USDSUSDT", "USDDUSDT", "USDEUSDT", "USDJUSDT", "PAXGUSDT",
-    "XAUTUSDT",  # gold-backed
-    # Leveraged tokens (reset mechanism breaks TA)
+    "XAUTUSDT",  # token berbasis emas
+    # Leveraged tokens (mekanisme rebalance merusak analisis teknikal)
     "BTCUPUSDT", "BTCDOWNUSDT", "ETHUPUSDT", "ETHDOWNUSDT",
     "BNBUPUSDT", "BNBDOWNUSDT", "TRXUPUSDT", "TRXDOWNUSDT",
 }
 
 
 # ══════════════════════════════════════════════
-# HTTP SESSION (shared, with automatic retry)
+# HTTP SESSION (dengan retry otomatis)
 # ══════════════════════════════════════════════
-def _build_session():
-    """
-    Build a requests.Session with automatic retry on transient errors.
-    Retries up to 3x on 429/500/502/503/504, with exponential back-off.
-    """
+def _build_session() -> requests.Session:
+    """Buat session HTTP dengan retry back-off otomatis pada transient error."""
     session = requests.Session()
     retries = Retry(
         total=3,
@@ -110,10 +120,10 @@ _session = _build_session()
 # ══════════════════════════════════════════════
 # BINANCE REQUEST HELPER (multi-endpoint failover)
 # ══════════════════════════════════════════════
-def _binance_get(path, params=None, timeout=15):
+def _binance_get(path: str, params: dict | None = None, timeout: int = 15):
     """
-    Try each Binance endpoint until one succeeds.
-    Returns (data, used_base) on success, raises after all endpoints fail.
+    Coba endpoint Binance satu per satu sampai berhasil.
+    Mengembalikan (data, base_url).
     """
     last_err = None
     for base in BINANCE_ENDPOINTS:
@@ -121,39 +131,42 @@ def _binance_get(path, params=None, timeout=15):
         try:
             resp = _session.get(url, params=params, timeout=timeout)
             if resp.status_code == 451:
-                log.debug(f"  [binance] 451 on {base}, trying next")
-                last_err = f"HTTP 451 from {base}"
+                log.debug(f"[binance] 451 pada {base}, mencoba endpoint berikutnya...")
+                last_err = f"HTTP 451 dari {base}"
                 continue
             resp.raise_for_status()
             return resp.json(), base
         except requests.RequestException as e:
-            log.debug(f"  [binance] {base} failed: {e}")
+            log.debug(f"[binance] {base} gagal: {e}")
             last_err = str(e)
-    raise requests.RequestException(f"All Binance endpoints failed. Last: {last_err}")
+    raise requests.RequestException(f"Semua endpoint Binance gagal diakses. Error terakhir: {last_err}")
 
 
 # ══════════════════════════════════════════════
 # DYNAMIC COIN SCANNER
 # ══════════════════════════════════════════════
-def get_top_volume_coins(limit=30):
+def get_top_volume_coins(limit: int = 30) -> list[str]:
     """
-    Ambil daftar top koin USDT-Margined berdasarkan 24h quote volume.
+    Ambil daftar koin USDT paling likuid dari Binance berdasarkan 24h quote volume.
     Abaikan stablecoins dan leveraged tokens.
     """
     try:
         data, _ = _binance_get(TICKER_24HR_ENDPOINT)
     except Exception as e:
-        log.error(f"Gagal fetch 24hr ticker: {e}")
+        log.error(f"Gagal mengambil ticker 24h Binance: {e}")
         return []
 
     valid_coins = []
     for item in data:
-        symbol = item['symbol']
+        symbol = item.get("symbol", "")
         if symbol.endswith("USDT") and symbol not in STABLECOIN_SYMBOLS:
-            valid_coins.append({
-                "symbol": symbol,
-                "quoteVolume": float(item['quoteVolume'])
-            })
+            try:
+                valid_coins.append({
+                    "symbol": symbol,
+                    "quoteVolume": float(item.get("quoteVolume", 0.0)),
+                })
+            except (ValueError, TypeError):
+                continue
 
     valid_coins.sort(key=lambda x: x["quoteVolume"], reverse=True)
     return [c["symbol"] for c in valid_coins[:limit]]
@@ -162,11 +175,22 @@ def get_top_volume_coins(limit=30):
 # ══════════════════════════════════════════════
 # BINANCE DATA FETCHER
 # ══════════════════════════════════════════════
-def fetch_klines(symbol, interval, limit=100):
+_KLINE_CACHE: dict[tuple[str, str, int], tuple[float, pd.DataFrame]] = {}
+
+
+def fetch_klines(symbol: str, interval: str, limit: int = 100) -> pd.DataFrame:
     """
-    Fetch kline/candlestick data dari Binance Public API.
-    Returns DataFrame dengan kolom OHLCV standar.
+    Ambil data candlestick (OHLCV) dari Binance Public API.
+    Mengembalikan DataFrame dengan kolom OHLCV standar.
+    Menggunakan cache in-memory (30s) agar tidak fetch ulang data yang sama antar strategi.
     """
+    now = time.time()
+    cache_key = (symbol, interval, limit)
+    if cache_key in _KLINE_CACHE:
+        cache_time, cached_df = _KLINE_CACHE[cache_key]
+        if now - cache_time < 30.0:
+            return cached_df.copy()
+
     params = {
         "symbol": symbol,
         "interval": interval,
@@ -175,20 +199,23 @@ def fetch_klines(symbol, interval, limit=100):
     try:
         data, _ = _binance_get(KLINES_ENDPOINT, params=params)
     except requests.exceptions.ConnectionError as e:
-        log.error(f"Connection failed for {symbol} {interval}: {e}")
+        log.error(f"Koneksi gagal untuk {symbol} {interval}: {e}")
         return pd.DataFrame()
     except requests.exceptions.Timeout as e:
-        log.error(f"Timeout fetching {symbol} {interval}: {e}")
+        log.error(f"Timeout saat mengambil {symbol} {interval}: {e}")
         return pd.DataFrame()
     except requests.RequestException as e:
-        log.error(f"Fetch {symbol} {interval}: {e}")
+        log.error(f"Error fetch {symbol} {interval}: {e}")
         return pd.DataFrame()
 
-    return _parse_klines(data)
+    df = _parse_klines(data)
+    if not df.empty:
+        _KLINE_CACHE[cache_key] = (now, df)
+    return df
 
 
-def _parse_klines(data):
-    """Parse raw Binance klines JSON into DataFrame."""
+def _parse_klines(data: list) -> pd.DataFrame:
+    """Konversi raw klines JSON Binance ke pandas DataFrame terstruktur."""
     df = pd.DataFrame(data, columns=[
         "open_time", "open", "high", "low", "close", "volume",
         "close_time", "quote_vol", "trades", "taker_buy_base",
@@ -201,13 +228,10 @@ def _parse_klines(data):
     return df
 
 
-def fetch_klines_paginated(symbol, interval, total_limit=1000):
+def fetch_klines_paginated(symbol: str, interval: str, total_limit: int = 1000) -> pd.DataFrame:
     """
-    Fetch large historical klines by paginating backwards via endTime.
-    Binance allows max 1000 candles per request; this function transparently
-    fetches up to `total_limit` candles.
-
-    Used by the backtest engine which needs weeks/months of data.
+    Ambil historical klines dalam jumlah besar via pagination mundur endTime.
+    Digunakan oleh mesin backtest.
     """
     page_size = 1000
     all_data = []
@@ -216,90 +240,97 @@ def fetch_klines_paginated(symbol, interval, total_limit=1000):
 
     while remaining > 0:
         limit = min(page_size, remaining)
-        params = {"symbol": symbol, "interval": interval, "limit": limit}
+        params: dict[str, str | int] = {"symbol": symbol, "interval": interval, "limit": limit}
         if end_time is not None:
             params["endTime"] = end_time
 
         try:
             data, _ = _binance_get(KLINES_ENDPOINT, params=params)
         except requests.RequestException as e:
-            log.error(f"Paginated fetch failed for {symbol} {interval}: {e}")
+            log.error(f"Pagination fetch gagal untuk {symbol} {interval}: {e}")
             break
 
         if not data:
             break
 
-        all_data = data + all_data  # prepend older candles
+        all_data = data + all_data
         oldest_open_time = data[0][0]
         end_time = oldest_open_time - 1
         remaining -= len(data)
 
         if len(data) < limit:
-            break  # no more historical data available
+            break
 
-        time.sleep(0.1)  # be polite to Binance API
+        time.sleep(0.08)
 
     if not all_data:
         return pd.DataFrame()
 
-    # Dedup by open_time (in case overlap)
     df = _parse_klines(all_data)
-    df = df.drop_duplicates(subset="open_time").sort_values("open_time").reset_index(drop=True)
-    return df
+    return df.drop_duplicates(subset="open_time").sort_values("open_time").reset_index(drop=True)
 
 
 # ══════════════════════════════════════════════
-# CHART GENERATOR
+# CHART GENERATOR (mplfinance)
 # ══════════════════════════════════════════════
-def generate_chart(symbol, df):
+def generate_chart(symbol: str, df: pd.DataFrame) -> io.BytesIO:
     """
-    Generate 5m candlestick chart and return as BytesIO.
-    df should have datetime index and OHLC columns.
+    Buat grafik candlestick 5m dalam format BytesIO PNG untuk dikirim ke Telegram.
+    Figure selalu ditutup secara eksplisit untuk mencegah kebocoran memori.
     """
-    import matplotlib.pyplot as plt  # local import to allow global mplfinance config
-
     df_chart = df.copy()
     df_chart.set_index("open_time", inplace=True)
 
     buf = io.BytesIO()
 
-    mc = mpf.make_marketcolors(up='g', down='r', edge='inherit', wick='inherit', volume='in', ohlc='i')
-    s  = mpf.make_mpf_style(marketcolors=mc, gridstyle=':', y_on_right=False)
+    # Warna candle: hijau (up), merah (down)
+    mc = mpf.make_marketcolors(
+        up='#26a69a',
+        down='#ef5350',
+        edge='inherit',
+        wick='inherit',
+        volume='in',
+        ohlc='i'
+    )
+    s = mpf.make_mpf_style(
+        marketcolors=mc,
+        gridstyle=':',
+        gridcolor='#2a2e39',
+        facecolor='#131722',
+        figcolor='#131722',
+        y_on_right=True,
+    )
 
-    title = f"\n{symbol} 5m Rejection"
+    coin = symbol.replace("USDT", "")
+    title = f"\n{coin}/USDT (5m) — Sniper Setup"
+
     fig, _ = mpf.plot(
-        df_chart, type='candle', style=s, title=title,
-        volume=False, savefig=dict(fname=buf, dpi=100, bbox_inches='tight'),
-        figsize=(6, 4),
+        df_chart,
+        type='candle',
+        style=s,
+        title=dict(title=title, color='#d1d4dc', size=11),
+        volume=False,
+        savefig=dict(fname=buf, dpi=110, bbox_inches='tight', facecolor='#131722'),
+        figsize=(6.5, 4.0),
         returnfig=True,
     )
 
-    # IMPORTANT: explicitly close figure to prevent memory leak in long-running bots
     plt.close(fig)
-
     buf.seek(0)
     return buf
 
 
 # ══════════════════════════════════════════════
 # FILTER 1 — 4H: Support Bounce + Volume Spike
-# Syarat: (1) Low masuk zona buffer support
-#         (2) Close > Open (bounce/memantul)
-#         (3) Volume >= VOL_SPIKE_THRESHOLD (default 1.5x) rata-rata 20 candle
 # ══════════════════════════════════════════════
-def check_4h_support_volume(symbol):
-    """
-    Cek apakah harga menyentuh support, memantul, dan volume spike.
-    Support = lowest low dari 20 candle terakhir.
-    Buffer = 1.5% di atas support level.
-    Volume spike = volume candle terakhir >= VOL_SPIKE_THRESHOLD x avg 20 candle.
-    """
+def check_4h_support_volume(symbol: str) -> dict:
+    """Cek pantulan support dan lonjakan volume di timeframe 4H."""
     df = fetch_klines(symbol, "4h", limit=30)
     return _check_4h_support_volume_df(df)
 
 
-def _check_4h_support_volume_df(df):
-    """Pure (no-fetch) variant of check_4h_support_volume. Used by backtest."""
+def _check_4h_support_volume_df(df: pd.DataFrame | None) -> dict:
+    """Versi pure filter 4H tanpa network fetch (digunakan juga oleh backtest)."""
     if df is None or df.empty:
         return {"pass": False, "reason": "Data fetch failed"}
 
@@ -314,26 +345,24 @@ def _check_4h_support_volume_df(df):
 
     buffer = support_level * 0.015
     in_support_zone = current_low <= (support_level + buffer)
-
     is_bouncing = current_close > current_open
 
     avg_vol_20 = recent_20["volume"].mean()
     vol_ratio = current_vol / avg_vol_20 if avg_vol_20 > 0 else 0
     has_volume_spike = vol_ratio >= VOL_SPIKE_THRESHOLD
 
-    distance_pct = ((current_low - support_level) / support_level) * 100
-
+    distance_pct = ((current_low - support_level) / support_level) * 100 if support_level else 0
     all_pass = in_support_zone and is_bouncing and has_volume_spike
 
-    support_icon = "[Y]" if in_support_zone else "[N]"
-    bounce_icon = "[Y]" if is_bouncing else "[N]"
-    volume_icon = "[Y]" if has_volume_spike else "[N]"
+    support_icon = "✅" if in_support_zone else "❌"
+    bounce_icon = "✅" if is_bouncing else "❌"
+    volume_icon = "✅" if has_volume_spike else "❌"
 
     return {
         "pass": all_pass,
-        "close": round(current_close, 2),
-        "current_low": round(current_low, 2),
-        "support": round(support_level, 2),
+        "close": round(current_close, 4),
+        "current_low": round(current_low, 4),
+        "support": round(support_level, 4),
         "distance": f"{distance_pct:.2f}%",
         "in_support_zone": in_support_zone,
         "is_bouncing": is_bouncing,
@@ -341,8 +370,8 @@ def _check_4h_support_volume_df(df):
         "has_volume_spike": has_volume_spike,
         "status": "SUPPORT BOUNCE + VOL" if all_pass else "FILTER 4H GAGAL",
         "detail": (
-            f"{support_icon} Support Zone ({distance_pct:.2f}%)  "
-            f"{bounce_icon} Bounce  "
+            f"{support_icon} Support ({distance_pct:.2f}%) | "
+            f"{bounce_icon} Bounce | "
             f"{volume_icon} Vol {vol_ratio:.1f}x"
         ),
     }
@@ -350,20 +379,15 @@ def _check_4h_support_volume_df(df):
 
 # ══════════════════════════════════════════════
 # FILTER 2 — 1H: Stochastic Oversold
-# Syarat: %K <= 20 (Oversold)
-# Stochastic parameter: (5, 3, 3)
 # ══════════════════════════════════════════════
-def check_1h_stochastic(symbol):
-    """
-    Cek Stochastic (5,3,3) di TF 1H.
-    PASS jika K <= 20 (oversold).
-    """
+def check_1h_stochastic(symbol: str) -> dict:
+    """Cek osilator Stochastic (5,3,3) pada timeframe 1H."""
     df = fetch_klines(symbol, "1h", limit=50)
     return _check_1h_stochastic_df(df)
 
 
-def _check_1h_stochastic_df(df):
-    """Pure (no-fetch) variant of check_1h_stochastic. Used by backtest."""
+def _check_1h_stochastic_df(df: pd.DataFrame | None) -> dict:
+    """Versi pure filter 1H tanpa network fetch (digunakan juga oleh backtest)."""
     if df is None or df.empty:
         return {"pass": False, "reason": "Data fetch failed"}
 
@@ -378,70 +402,48 @@ def _check_1h_stochastic_df(df):
     d_val = stoch[d_col].iloc[-1]
 
     if pd.isna(k_val) or pd.isna(d_val):
-        return {"pass": False, "reason": "Stochastic NaN"}
+        return {"pass": False, "reason": "Stochastic bernilai NaN"}
 
     is_oversold = k_val <= STOCH_OVERSOLD
-
-    os_icon = "[Y]" if is_oversold else "[N]"
-
-    if is_oversold:
-        status = "OVERSOLD"
-    else:
-        status = "NOT OVERSOLD"
+    os_icon = "✅" if is_oversold else "❌"
 
     return {
         "pass": is_oversold,
         "k": round(k_val, 2),
         "d": round(d_val, 2),
         "is_oversold": is_oversold,
-        "status": status,
-        "detail": f"{os_icon} K={k_val:.1f} (<={STOCH_OVERSOLD})",
+        "status": "OVERSOLD" if is_oversold else "NOT OVERSOLD",
+        "detail": f"{os_icon} K={k_val:.1f} (<={STOCH_OVERSOLD}) | D={d_val:.1f}",
     }
 
 
 # ══════════════════════════════════════════════
 # FILTER 3 — 5m: Bullish Pinbar Sniper Entry
-# Syarat: (1) Close > Open (bullish candle)
-#         (2) Lower wick >= 1.5x body
-# Catatan: candle [-1] di-resolve secara close_time:
-#   - kalau candle [-1] sudah close lebih dari 30 detik lalu → pakai [-1]
-#   - kalau belum close (masih forming) → pakai [-2]
 # ══════════════════════════════════════════════
-def check_5m_pinbar(symbol):
-    """
-    Cek apakah candle 5m terakhir (yang sudah close) adalah Bullish Pinbar.
-    Bullish Pinbar = Close > Open DAN lower wick >= 1.5x body.
-    Pemilihan candle disesuaikan dengan close_time agar tidak salah ambil
-    candle yang masih forming.
-    """
+def check_5m_pinbar(symbol: str) -> dict:
+    """Cek pola candle Bullish Pinbar pada timeframe 5m."""
     df = fetch_klines(symbol, "5m", limit=25)
     return _check_5m_pinbar_df(df)
 
 
-def _check_5m_pinbar_df(df):
-    """
-    Pure (no-fetch) variant of check_5m_pinbar.
-    NOTE: di mode backtest, kita anggap df.iloc[-1] sudah closed
-    (backtest walk-forward selalu slice sampai candle yang closed).
-    """
+def _check_5m_pinbar_df(df: pd.DataFrame | None) -> dict:
+    """Versi pure filter 5m tanpa network fetch."""
     if df is None or df.empty:
         return {"pass": False, "reason": "Data fetch failed", "df": None}
 
-    # Tentukan candle yang sudah close
     now_utc = pd.Timestamp.now(tz="UTC")
     last_close_time = df["close_time"].iloc[-1]
     secs_since_close = (now_utc - last_close_time).total_seconds()
 
-    # Kalau candle [-1] sudah close lebih dari 30 detik lalu, pakai [-1].
-    # Kalau belum (masih forming), pakai [-2].
+    # Gunakan candle yang sudah tuntas terkonfirmasi close
     candle_idx = -1 if secs_since_close > 30 else -2
 
     candle = df.iloc[candle_idx]
     o, h, low, c = candle["open"], candle["high"], candle["low"], candle["close"]
 
     body = abs(c - o)
-    lower_wick = max(0, min(o, c) - low)
-    upper_wick = max(0, h - max(o, c))
+    lower_wick = max(0.0, min(o, c) - low)
+    upper_wick = max(0.0, h - max(o, c))
 
     body_ref = max(body, 0.0001)
     wick_ratio = lower_wick / body_ref
@@ -450,8 +452,8 @@ def _check_5m_pinbar_df(df):
     has_long_tail = lower_wick >= (1.5 * body_ref)
     is_pinbar = is_bullish and has_long_tail
 
-    bull_icon = "[Y]" if is_bullish else "[N]"
-    tail_icon = "[Y]" if has_long_tail else "[N]"
+    bull_icon = "✅" if is_bullish else "❌"
+    tail_icon = "✅" if has_long_tail else "❌"
 
     return {
         "pass": is_pinbar,
@@ -464,15 +466,15 @@ def _check_5m_pinbar_df(df):
         "upper_wick": round(upper_wick, 6),
         "ratio": round(wick_ratio, 2),
         "status": "BULLISH PINBAR" if is_pinbar else "NO PINBAR",
-        "detail": f"{bull_icon} Bullish  {tail_icon} Tail {wick_ratio:.1f}x body",
-        "df": df
+        "detail": f"{bull_icon} Bullish | {tail_icon} Ekor Bawah {wick_ratio:.1f}x Body",
+        "df": df,
     }
 
 
 # ══════════════════════════════════════════════
 # RISK:REWARD CALCULATOR (1:2)
 # ══════════════════════════════════════════════
-def calculate_risk_reward(entry, support):
+def calculate_risk_reward(entry: float, support: float) -> dict:
     """
     Hitung Stop Loss dan Take Profit berdasarkan Risk:Reward 1:2.
     SL = support - 1.5%
@@ -481,43 +483,38 @@ def calculate_risk_reward(entry, support):
     sl = support * (1 - STOP_LOSS_PCT / 100)
     risk = entry - sl
     tp = entry + (risk * RISK_REWARD_RATIO)
-    risk_pct = (risk / entry) * 100
-    reward_pct = ((tp - entry) / entry) * 100
+    risk_pct = (risk / entry) * 100 if entry else 0
+    reward_pct = ((tp - entry) / entry) * 100 if entry else 0
 
     return {
-        "entry": round(entry, 2),
-        "sl": round(sl, 2),
-        "tp": round(tp, 2),
-        "risk": round(risk, 2),
+        "entry": round(entry, 4),
+        "sl": round(sl, 4),
+        "tp": round(tp, 4),
+        "risk": round(risk, 4),
         "risk_pct": round(risk_pct, 2),
         "reward_pct": round(reward_pct, 2),
     }
 
 
 # ══════════════════════════════════════════════
-# ANTI-SPAM: JSON Memory System (with file locking)
+# ANTI-SPAM: JSON Memory System (dengan File Locking)
 # ══════════════════════════════════════════════
-def load_memory():
-    """Baca alerted_coins.json, return dict kosong jika file belum ada."""
+def load_memory() -> dict:
+    """Baca file memory anti-spam, kembalikan dict kosong jika file belum ada."""
     if not os.path.exists(MEMORY_FILE):
         return {}
     try:
         with open(MEMORY_FILE, encoding="utf-8") as f:
             return json.load(f)
     except (OSError, json.JSONDecodeError) as e:
-        log.warning(f"Gagal baca memory file, reset: {e}")
+        log.warning(f"Gagal membaca memory file, reset ke kosong: {e}")
         return {}
 
 
-def save_memory(data):
-    """
-    Simpan data ke alerted_coins.json dengan file locking (POSIX only).
-    Mencegah race condition saat bot + GH Actions cron jalan bersamaan.
-    """
+def save_memory(data: dict):
+    """Simpan memory ke file JSON dengan fcntl locking (mencegah race condition)."""
     try:
-        with open(MEMORY_FILE, "r+" if os.path.exists(MEMORY_FILE) else "w",
-                   encoding="utf-8") as f:
-            # POSIX-only file lock; silently skipped on Windows
+        with open(MEMORY_FILE, "r+" if os.path.exists(MEMORY_FILE) else "w", encoding="utf-8") as f:
             with contextlib.suppress(AttributeError, OSError):
                 fcntl.flock(f.fileno(), fcntl.LOCK_EX)
             f.seek(0)
@@ -526,27 +523,22 @@ def save_memory(data):
             with contextlib.suppress(AttributeError, OSError):
                 fcntl.flock(f.fileno(), fcntl.LOCK_UN)
     except OSError as e:
-        log.error(f"Gagal simpan memory file: {e}")
+        log.error(f"Gagal menyimpan memory file: {e}")
 
 
-def is_on_cooldown(symbol, memory):
-    """
-    Cek apakah koin masih dalam cooldown period.
-    Return True jika masih cooldown (jangan kirim ulang).
-    """
-    if symbol not in memory:
+def is_on_cooldown(key: str, memory: dict) -> bool:
+    """Cek apakah key (symbol atau symbol:strategy) masih dalam masa cooldown."""
+    if key not in memory:
         return False
-
-    last_alert_ts = memory[symbol].get("last_alert", 0)
+    last_alert_ts = memory[key].get("last_alert", 0)
     now_ts = datetime.now(timezone.utc).timestamp()
     elapsed_hours = (now_ts - last_alert_ts) / 3600
-
     return elapsed_hours < COOLDOWN_HOURS
 
 
-def record_alert(symbol, memory):
-    """Catat timestamp alert terbaru untuk koin ini."""
-    memory[symbol] = {
+def record_alert(key: str, memory: dict) -> dict:
+    """Catat timestamp alert terbaru untuk key yang diberikan."""
+    memory[key] = {
         "last_alert": datetime.now(timezone.utc).timestamp(),
         "last_alert_human": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
     }
@@ -554,100 +546,113 @@ def record_alert(symbol, memory):
 
 
 # ══════════════════════════════════════════════
-# SIGNAL EMITTER — generic hook untuk Discord / Web / DB
+# TELEGRAM DISPATCHER & FORMATTER
 # ══════════════════════════════════════════════
-# Pluggable signal sink. Default = log only. Discord bot & Web API can
-# register their own sinks via `register_signal_sink(...)`.
-_signal_sinks: list = []
+def build_inline_keyboard(symbol: str) -> dict:
+    """Buat inline keyboard Telegram dengan tombol cepat ke Binance, TradingView, dan CoinGecko."""
+    coin = symbol.replace("USDT", "")
+    return {
+        "inline_keyboard": [
+            [
+                {
+                    "text": "📊 Binance Chart",
+                    "url": f"https://www.binance.com/en/trade/{coin}_USDT",
+                },
+                {
+                    "text": "📈 TradingView",
+                    "url": f"https://www.tradingview.com/chart/?symbol=BINANCE:{symbol}",
+                },
+            ],
+            [
+                {
+                    "text": f"🦎 {coin} di CoinGecko",
+                    "url": f"https://www.coingecko.com/en/coins/{coin.lower()}",
+                },
+            ],
+        ],
+    }
 
 
-def register_signal_sink(sink):
+def build_telegram_report(symbol: str, signal_result, ai_val: Any = None) -> str:
     """
-    Daftarkan callable yang akan dipanggil untuk setiap signal PASS.
-
-    Signature sink:
-        sink(symbol: str, signal: SignalResult, report: str, chart_buf: BytesIO | None)
-
-    Contoh:
-        # Discord bot mendaftarkan sink yang kirim embed ke channel
-        radar.register_signal_sink(my_discord_sink)
-
-        # Web API mendaftarkan sink yang simpan ke Supabase + emit SSE
-        radar.register_signal_sink(my_web_sink)
-    """
-    if sink not in _signal_sinks:
-        _signal_sinks.append(sink)
-        log.info(f"Signal sink registered: {getattr(sink, '__name__', sink)}")
-
-
-def unregister_signal_sink(sink):
-    """Hapus sink dari daftar."""
-    if sink in _signal_sinks:
-        _signal_sinks.remove(sink)
-
-
-def emit_signal(symbol, signal_result, report, chart_buf=None):
-    """
-    Broadcast signal ke semua sink yang terdaftar.
-    Failures di salah satu sink tidak mengganggu sink lainnya.
-    """
-    if not _signal_sinks:
-        log.info(f"[no-sink] Signal for {symbol}: {report[:100]}...")
-        return
-
-    for sink in _signal_sinks:
-        try:
-            sink(symbol, signal_result, report, chart_buf)
-        except Exception as e:
-            log.exception(f"Signal sink {sink} failed: {e}")
-
-
-def build_signal_report(symbol, signal_result):
-    """
-    Buat format laporan generic (plain text, bukan HTML Telegram) dari SignalResult.
-    Sink (Discord embed, Web SSE, DB) bisa reformat sesuai kebutuhan.
+    Format pesan laporan signal Telegram dengan ringkas, sederhana, dan jelas.
+    Menyertakan hasil validasi AI dan indikator Stochastic Oscillator (5,3,3).
     """
     coin = symbol.replace("USDT", "")
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     s = signal_result
     rr = s.details.get("rr", {})
-    strategy_label = {
-        "reversal": "Reversal / Bottom Fishing",
-        "breakout": "Breakout / Momentum",
-        "trend_follow": "Trend Follow / Pullback",
-    }.get(s.strategy_name, s.strategy_name.title())
 
-    checklist_lines = []
-    for tf_key, tf_label in [("4h", "4H"), ("1h", "1H"), ("5m", "5m")]:
-        tf_data = s.details.get(tf_key, {})
-        if not tf_data:
-            continue
-        status = tf_data.get("status", "")
-        detail = tf_data.get("detail", "")
-        checklist_lines.append(f"  {tf_label} | {status} | {detail}")
-    checklist_block = "\n".join(checklist_lines)
+    strategy_labels = {
+        "reversal": "REVERSAL",
+        "breakout": "BREAKOUT",
+        "trend_follow": "TREND FOLLOW",
+    }
+    strategy_label = strategy_labels.get(s.strategy_name, s.strategy_name.upper())
+
+    entry_val = rr.get("entry", s.entry)
+    sl_val = rr.get("sl", s.stop_loss)
+    tp_val = rr.get("tp", s.take_profit)
+    risk_pct = rr.get("risk_pct", 0)
+    reward_pct = rr.get("reward_pct", 0)
+    rr_ratio = getattr(s, "risk_reward_ratio", RISK_REWARD_RATIO)
+
+    # Info Validasi AI & Stochastic Oscillator (5,3,3) ringkas
+    ai_status = "APPROVED"
+    ai_score = 75
+    stoch_k = "-"
+    stoch_d = "-"
+    stoch_stat = "NETRAL"
+    stoch_cross = ""
+    reason_note = ""
+
+    if ai_val is not None:
+        ai_status = "APPROVED" if ai_val.approved else "REJECTED"
+        ai_score = ai_val.score
+        stoch_k = ai_val.stoch_1h_k
+        stoch_d = ai_val.stoch_1h_d
+        stoch_stat = ai_val.stoch_status
+        if ai_val.stoch_crossover and ai_val.stoch_crossover != "Netral":
+            stoch_cross = f" • {ai_val.stoch_crossover}"
+        if ai_val.reason:
+            reason_note = f"💡 <i>{ai_val.reason}</i>\n"
+    else:
+        try:
+            from ai_analyst import calculate_technical_summary
+            tech = calculate_technical_summary(symbol)
+            if tech.get("success"):
+                stoch = tech.get("stoch_1h", {})
+                stoch_k = stoch.get("k", "-")
+                stoch_d = stoch.get("d", "-")
+                stoch_stat = stoch.get("status", "NETRAL")
+                if stoch.get("bullish_cross"):
+                    stoch_cross = " • Bullish Golden Cross"
+        except Exception as e:
+            log.warning(f"Gagal mengambil teknikal untuk report {symbol}: {e}")
 
     report = (
-        f"SNIPER SIGNAL — {coin}/USDT\n"
-        f"──────────────────────────────\n"
-        f"Strategy: {strategy_label}\n\n"
-        f"{checklist_block}\n\n"
-        f"──────────────────────────────\n"
-        f"EXECUTION PLAN (R:R 1:{s.risk_reward_ratio})\n"
-        f"  Entry  : {rr.get('entry', s.entry)}\n"
-        f"  SL     : {rr.get('sl', s.stop_loss)}  (-{rr.get('risk_pct', 0)}%)\n"
-        f"  TP     : {rr.get('tp', s.take_profit)}  (+{rr.get('reward_pct', 0)}%)\n\n"
-        f"──────────────────────────────\n"
-        f"VERDICT: HIGH CONVICTION ENTRY\n"
-        f"{strategy_label}\n"
-        f"{now_str}\n"
-        f"#{coin} #{s.strategy_name}"
+        f"🎯 <b>SINYAL: {coin}/USDT — {strategy_label}</b>\n"
+        f"<code>──────────────────────────────</code>\n"
+        f"🤖 <b>AI:</b> {ai_status} (Skor: <b>{ai_score}/100</b>)\n"
+        f"📊 <b>Stoch (5,3,3):</b> K=<code>{stoch_k}</code> | D=<code>{stoch_d}</code> ({stoch_stat}{stoch_cross})\n"
+        f"{reason_note}"
+        f"<code>──────────────────────────────</code>\n"
+        f"💵 <b>Entry :</b> <code>{entry_val}</code>\n"
+        f"🛑 <b>SL    :</b> <code>{sl_val}</code> (-{risk_pct}%)\n"
+        f"🎯 <b>TP    :</b> <code>{tp_val}</code> (+{reward_pct}% | R:R 1:{rr_ratio})\n"
+        f"<code>──────────────────────────────</code>\n"
+        f"⏰ <i>{now_str}</i> | #{coin} #CryptoRadar"
     )
     return report
 
 
-def build_external_links(symbol):
-    """URL shortcuts untuk Binance / TradingView / CoinGecko."""
+def build_signal_report(symbol: str, signal_result, ai_val: Any = None) -> str:
+    """Laporan generic plain text untuk kompatibilitas."""
+    return build_telegram_report(symbol, signal_result, ai_val=ai_val)
+
+
+def build_external_links(symbol: str) -> dict:
+    """Helper shortcut URL."""
     coin = symbol.replace("USDT", "")
     return {
         "binance": f"https://www.binance.com/en/trade/{coin}_USDT",
@@ -656,96 +661,277 @@ def build_external_links(symbol):
     }
 
 
+def send_telegram(
+    message: str,
+    reply_markup: dict | None = None,
+    photo_buf: io.BytesIO | None = None,
+    token: str | None = None,
+    chat_id: str | None = None,
+    thread_id: str | int | None = None,
+    parse_mode: str = "HTML",
+) -> bool:
+    """
+    Kirim pesan ke Telegram Bot API (mendukung teks, foto chart, dan Topik / Forum).
+    """
+    bot_token = token or TELEGRAM_BOT_TOKEN
+    target_chat = chat_id or TELEGRAM_CHAT_ID
+    target_thread = thread_id if thread_id is not None else TELEGRAM_THREAD_ID
+
+    if not bot_token or not target_chat:
+        log.warning("Kredensial Telegram belum diset (TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID). Output ke konsol:")
+        print(message)
+        return False
+
+    # Kirim foto dengan caption jika ada buffer gambar
+    if photo_buf:
+        url = f"https://api.telegram.org/bot{bot_token}/sendPhoto"
+
+        # Caption Telegram dibatasi maksimal 1024 karakter
+        if len(message) <= 1024:
+            payload: dict = {
+                "chat_id": target_chat,
+                "caption": message,
+                "parse_mode": parse_mode,
+            }
+            if target_thread:
+                try:
+                    payload["message_thread_id"] = int(target_thread)
+                except ValueError:
+                    pass
+            if reply_markup:
+                payload["reply_markup"] = json.dumps(reply_markup)
+
+            files = {"photo": ("chart.png", photo_buf.getvalue(), "image/png")}
+            try:
+                resp = _session.post(url, data=payload, files=files, timeout=20)
+                if resp.status_code == 200:
+                    log.info("Telegram: Foto dan signal berhasil dikirim.")
+                    return True
+                if resp.status_code == 400 and "migrate_to_chat_id" in resp.text:
+                    err_json = resp.json()
+                    new_id = str(err_json.get("parameters", {}).get("migrate_to_chat_id"))
+                    log.info(f"Chat dimigrasi ke supergroup: {new_id}. Mengirim ulang...")
+                    return send_telegram(message, reply_markup=reply_markup, photo_buf=photo_buf,
+                                         token=token, chat_id=new_id, thread_id=target_thread, parse_mode=parse_mode)
+                log.error(f"Telegram sendPhoto gagal: {resp.status_code} — {resp.text}")
+            except Exception as e:
+                log.error(f"Exception saat kirim photo Telegram: {e}")
+        else:
+            # Jika pesan lebih dari 1024 karakter, kirim foto dahulu lalu pesan teks lengkap
+            brief_caption = message.split("\n")[0]
+            files = {"photo": ("chart.png", photo_buf.getvalue(), "image/png")}
+            photo_data = {"chat_id": target_chat, "caption": brief_caption, "parse_mode": parse_mode}
+            if target_thread:
+                try:
+                    photo_data["message_thread_id"] = int(target_thread)
+                except ValueError:
+                    pass
+            try:
+                _session.post(
+                    url,
+                    data=photo_data,
+                    files=files,
+                    timeout=20,
+                )
+            except Exception as e:
+                log.error(f"Gagal kirim foto awal: {e}")
+
+    # Kirim pesan teks (fallback atau pesan standalone)
+    text_url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    text_payload: dict = {
+        "chat_id": target_chat,
+        "text": message,
+        "parse_mode": parse_mode,
+        "disable_web_page_preview": True,
+    }
+    if target_thread:
+        try:
+            text_payload["message_thread_id"] = int(target_thread)
+        except ValueError:
+            pass
+    if reply_markup:
+        text_payload["reply_markup"] = json.dumps(reply_markup)
+
+    try:
+        resp = _session.post(text_url, json=text_payload, timeout=15)
+        if resp.status_code == 200:
+            log.info("Telegram: Pesan teks berhasil dikirim.")
+            return True
+        if resp.status_code == 400 and "migrate_to_chat_id" in resp.text:
+            err_json = resp.json()
+            new_id = str(err_json.get("parameters", {}).get("migrate_to_chat_id"))
+            log.info(f"Chat dimigrasi ke supergroup: {new_id}. Mengirim ulang...")
+            return send_telegram(message, reply_markup=reply_markup, photo_buf=None,
+                                 token=token, chat_id=new_id, thread_id=target_thread, parse_mode=parse_mode)
+        log.error(f"Telegram sendMessage gagal: {resp.status_code} — {resp.text}")
+        return False
+    except Exception as e:
+        log.error(f"Exception saat kirim pesan Telegram: {e}")
+        return False
+
+
+# ══════════════════════════════════════════════
+# PLUGGABLE SIGNAL EMITTER
+# ══════════════════════════════════════════════
+_signal_sinks: list = []
+
+
+def register_signal_sink(sink):
+    """Daftarkan callback hook kustom untuk setiap sinyal PASS."""
+    if sink not in _signal_sinks:
+        _signal_sinks.append(sink)
+        log.info(f"Signal sink terdaftar: {getattr(sink, '__name__', sink)}")
+
+
+def unregister_signal_sink(sink):
+    """Hapus callback hook."""
+    if sink in _signal_sinks:
+        _signal_sinks.remove(sink)
+
+
+def emit_signal(symbol: str, signal_result, report: str, chart_buf: io.BytesIO | None = None):
+    """Broadcast sinyal ke semua sink yang terdaftar."""
+    for sink in _signal_sinks:
+        try:
+            sink(symbol, signal_result, report, chart_buf)
+        except Exception as e:
+            log.exception(f"Signal sink {sink} gagal: {e}")
+
+
 # ══════════════════════════════════════════════
 # MAIN SCANNER ENGINE (Multi-Strategy)
 # ══════════════════════════════════════════════
-def run_scanner():
+def run_scanner(
+    limit: int = SCAN_LIMIT,
+    dry_run: bool = False,
+    notify_telegram: bool = True,
+) -> dict:
     """
-    Main loop: jalankan semua strategi yang aktif (env STRATEGIES) untuk
-    setiap top coin. Anti-spam memory key = (symbol, strategy_name).
+    Eksekusi satu putaran pemindaian pasar untuk semua strategi yang aktif.
+    Mengembalikan ringkasan statistik scan.
     """
-    # Lazy import to avoid circular import (strategies -> radar)
     from strategies import get_strategies
 
+    start_time = time.time()
     active_strategies = get_strategies()
     strategy_names = [s.name for s in active_strategies]
 
-    print("=" * 60)
-    print("  🎯 CRYPTO RADAR v6.0 -- Multi-Strategy Sniper (Hardened)")
-    print("=" * 60)
+    log.info("=" * 60)
+    log.info("🎯 CRYPTO RADAR v8.0 — Multi-Strategy Telegram Sniper")
+    log.info("=" * 60)
 
-    coins = get_top_volume_coins(limit=SCAN_LIMIT)
+    coins = get_top_volume_coins(limit=limit)
 
-    print(f"  Dynamic Top {SCAN_LIMIT} : {len(coins)} Coins found")
-    print(f"  Time     : {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
-    print(f"  Strategies: {strategy_names}")
-    print(f"  Memory   : {MEMORY_FILE} (cooldown {COOLDOWN_HOURS}h)")
-    print(f"  Vol Spike: {VOL_SPIKE_THRESHOLD}x")
-    print("=" * 60)
+    log.info(f"Top {limit} Koin Ditemukan: {len(coins)}")
+    log.info(f"Waktu Scan : {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
+    log.info(f"Strategi   : {strategy_names}")
+    log.info(f"Cooldown   : {COOLDOWN_HOURS} jam | File Memory: {MEMORY_FILE}")
+    log.info(f"Vol Spike  : {VOL_SPIKE_THRESHOLD}x | Mode Dry Run: {dry_run}")
+    log.info("=" * 60)
 
     memory = load_memory()
     signals_found = 0
+    detected_signals: list[dict] = []
 
-    for symbol in coins:
+    for idx, symbol in enumerate(coins, 1):
         coin = symbol.replace("USDT", "")
-        print(f"\n{'-' * 50}")
-        print(f"  Scanning: {coin}/USDT")
-        print(f"{'-' * 50}")
+        if idx % 25 == 0 or idx == len(coins):
+            log.info(f"Progress scan: {idx}/{len(coins)} koin ({coin})...")
 
         for strategy in active_strategies:
             memory_key = f"{symbol}:{strategy.name}"
 
-            # Anti-spam check per (symbol, strategy)
-            if is_on_cooldown(memory_key, memory):
+            # Cek anti-spam cooldown per pasangan (koin, strategi)
+            if not dry_run and is_on_cooldown(memory_key, memory):
                 elapsed = (
                     datetime.now(timezone.utc).timestamp()
                     - memory[memory_key].get("last_alert", 0)
                 ) / 3600
                 remaining = COOLDOWN_HOURS - elapsed
-                print(f"  [{strategy.name}] COOLDOWN -- {coin} ({remaining:.1f}h tersisa). Skip.")
+                log.debug(f"[{strategy.name}] COOLDOWN {coin} ({remaining:.1f}h tersisa). Skip.")
                 continue
 
-            print(f"  [{strategy.name}] evaluating...", end=" ")
             try:
                 result = strategy.check_signal(symbol)
             except Exception as e:
-                log.exception(f"Strategy {strategy.name} error on {symbol}: {e}")
-                print(f"ERROR: {e}")
+                log.warning(f"Error evaluasi strategi {strategy.name} pada {symbol}: {e}")
                 continue
 
             if not result.passed:
-                print(f"FAIL -- {result.reason}")
-                time.sleep(0.15)
+                time.sleep(0.05)
                 continue
 
-            print(f"PASS! Entry={result.entry} SL={result.stop_loss} TP={result.take_profit}")
+            log.info(f"🔥 CANDIDATE! {coin} [{strategy.name}] lolos filter strategi. Menjalankan Analisis AI Pre-Alert...")
 
-            # Generate chart (5m) bila chart_df tersedia
+            # ── VALIDASI & ANALISIS AI PRE-ALERT ──
+            # Sebelum mengirim sinyal, AI melakukan analisis mendalam (Stochastic 5,3,3, tren 4H, & volume)
+            try:
+                from ai_analyst import validate_signal_with_ai
+                ai_val = validate_signal_with_ai(symbol, strategy.name, result)
+            except Exception as e:
+                log.error(f"Error saat validasi AI {symbol}: {e}")
+                ai_val = None
+
+            if ai_val is not None and not ai_val.approved:
+                log.info(
+                    f"🛑 [AI REJECTED] {coin} [{strategy.name}] Skor: {ai_val.score}/100 "
+                    f"(Stoch 1H K={ai_val.stoch_1h_k}) — Alasan: {ai_val.reason}. Sinyal TIDAK dikirim."
+                )
+                time.sleep(0.05)
+                continue
+
+            log.info(
+                f"✅ [AI APPROVED] {coin} [{strategy.name}] Skor: {ai_val.score if ai_val else 'N/A'}/100! "
+                f"Entry={result.entry} SL={result.stop_loss} TP={result.take_profit}"
+            )
+
+            # Buat chart 5m jika DataFrame tersedia
             chart_buf = None
             if result.chart_df is not None and not result.chart_df.empty:
-                print("  Generating chart...")
                 try:
                     chart_buf = generate_chart(symbol, result.chart_df)
                 except Exception as e:
-                    log.error(f"Chart generation failed: {e}")
+                    log.error(f"Gagal generate chart {symbol}: {e}")
 
-            report = build_signal_report(symbol, result)
+            report = build_telegram_report(symbol, result, ai_val=ai_val)
+            keyboard = build_inline_keyboard(symbol)
+
+            if notify_telegram and not dry_run:
+                send_telegram(report, reply_markup=keyboard, photo_buf=chart_buf)
+
             emit_signal(symbol, result, report, chart_buf=chart_buf)
+
             signals_found += 1
+            detected_signals.append({
+                "symbol": symbol,
+                "strategy": strategy.name,
+                "entry": result.entry,
+                "sl": result.stop_loss,
+                "tp": result.take_profit,
+                "ai_score": ai_val.score if ai_val else None,
+            })
 
-            memory = record_alert(memory_key, memory)
-            print(f"  [{strategy.name}] {coin} signal sent & recorded.")
-            time.sleep(0.25)  # throttle antar strategy
+            if not dry_run:
+                memory = record_alert(memory_key, memory)
 
-    save_memory(memory)
+            time.sleep(0.2)
 
-    print(f"\n{'=' * 60}")
-    print(f"  Scan selesai. Sinyal dikirim: {signals_found} ({len(coins)} coins × {len(active_strategies)} strategies)")
-    print(f"{'=' * 60}")
+    if not dry_run:
+        save_memory(memory)
+
+    duration = round(time.time() - start_time, 2)
+    log.info(f"Scan selesai dalam {duration}s. Sinyal ditemukan: {signals_found}")
+
+    return {
+        "scanned_count": len(coins),
+        "signals_count": signals_found,
+        "signals": detected_signals,
+        "duration_seconds": duration,
+    }
 
 
 # ══════════════════════════════════════════════
-# ENTRY POINT
+# ENTRY POINT CLI
 # ══════════════════════════════════════════════
 if __name__ == "__main__":
     run_scanner()

@@ -1,0 +1,16 @@
+services:
+  crypto-radar:
+    build: .
+    container_name: crypto-radar-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      # Persistensi data anti-spam dan laporan backtest
+      - ./alerted_coins.json:/app/alerted_coins.json
+      - ./backtest_reports:/app/backtest_reports
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

@@ -2,9 +2,9 @@ name: Tests & Validation
 
 on:
   push:
-    branches: [main, web]
+    branches: [main]
   pull_request:
-    branches: [main, web]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -30,7 +30,7 @@ jobs:
           pip install --upgrade pip
           pip install -r requirements-dev.txt
 
-      - name: 🔍 Lint with ruff (blocking)
+      - name: 🔍 Lint with ruff
         run: ruff check .
 
       - name: 🧪 Run pytest

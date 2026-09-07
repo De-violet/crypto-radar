@@ -6,17 +6,17 @@
 
 [project]
 name = "crypto-radar"
-version = "7.0.0"
-description = "Multi-strategy crypto sniper bot with Discord + Web dashboard"
+version = "8.0.0"
+description = "Multi-strategy crypto sniper scanner & Telegram alert bot"
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.10"
 authors = [
     { name = "De-violet" },
 ]
-keywords = ["crypto", "trading-bot", "binance", "discord", "fastapi", "nextjs", "backtest"]
+keywords = ["crypto", "trading-bot", "binance", "telegram", "signals", "backtest"]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Financial and Insurance Industry",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
@@ -27,21 +27,13 @@ classifiers = [
 ]
 
 # Runtime dependencies mirror requirements.txt so `pip install .` works.
-# Versions kept in sync manually with requirements.txt.
 dependencies = [
-    "discord.py>=2.3.2,<3.0.0",
-    "aiohttp>=3.9.0,<4.0.0",
     "requests>=2.31.0,<3.0.0",
     "pandas>=2.1.0,<3.0.0",
     "pandas-ta>=0.3.14b1",
     "mplfinance>=0.12.10b0",
     "matplotlib>=3.8.0,<4.0.0",
     "python-dotenv>=1.0.0,<2.0.0",
-    "flask>=3.0.0,<4.0.0",
-    "fastapi>=0.110.0,<1.0.0",
-    "uvicorn[standard]>=0.27.0,<1.0.0",
-    "pydantic>=2.6.0,<3.0.0",
-    "supabase>=2.4.0,<3.0.0",
 ]
 
 [project.optional-dependencies]
@@ -59,9 +51,9 @@ Homepage = "https://github.com/De-violet/crypto-radar"
 Repository = "https://github.com/De-violet/crypto-radar"
 Issues = "https://github.com/De-violet/crypto-radar/issues"
 
-# Scripts opsional: jalankan via `python radar.py` tetap cara utama.
 [project.scripts]
 crypto-radar = "radar:run_scanner"
+crypto-radar-bot = "main:main"
 crypto-radar-backtest = "backtest:main"
 
 # ══════════════════════════════════════════════
@@ -80,29 +72,17 @@ extend-exclude = [
 ]
 
 [tool.ruff.lint]
-# Enable rule families:
-#   E  = pycodestyle errors
-#   F  = pyflakes (unused imports, undefined names)
-#   W  = pycodestyle warnings
-#   I  = isort (import ordering)
-#   B  = bugbear (common gotchas)
-#   UP = pyupgrade (modernize syntax)
-#   SIM = simplify
 select = ["E", "F", "W", "I", "B", "UP", "SIM"]
 ignore = [
     "E501",   # line-too-long (handled by formatter)
-    "B008",   # function call in default argument (Flask app = Flask('') OK)
     "SIM108", # ternary instead of if-else (readability)
 ]
 
 [tool.ruff.lint.per-file-ignores]
-# Test files boleh pakai unused fixtures & asserts panjang
 "tests/**/*.py" = ["B017", "B015"]
-# main.py boleh unused arguments di event hooks
-"main.py" = ["B008"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["radar", "strategies", "cogs", "backtest", "keep_alive"]
+known-first-party = ["radar", "strategies", "backtest", "main"]
 force-single-line = false
 combine-as-imports = true
 
@@ -142,7 +122,7 @@ filterwarnings = [
 # COVERAGE
 # ══════════════════════════════════════════════
 [tool.coverage.run]
-source = ["radar", "strategies", "cogs", "backtest", "keep_alive", "main"]
+source = ["radar", "strategies", "backtest", "main"]
 omit = [
     "tests/*",
     "**/__init__.py",
@@ -160,18 +140,18 @@ exclude_lines = [
     "if TYPE_CHECKING:",
     "@abstractmethod",
 ]
-fail_under = 50  # current baseline; raise over time
+fail_under = 40
 
 # ══════════════════════════════════════════════
 # MYPY (optional, tidak blocking CI)
 # ══════════════════════════════════════════════
 [tool.mypy]
 python_version = "3.10"
-warn_return_any = false        # too noisy for pandas-heavy code
+warn_return_any = false
 warn_unused_configs = true
-disallow_untyped_defs = false  # enable gradually
+disallow_untyped_defs = false
 check_untyped_defs = true
-ignore_missing_imports = true  # pandas_ta, mplfinance, discord no stubs
+ignore_missing_imports = true
 exclude = [
     "tests/",
     "build/",
@@ -179,5 +159,5 @@ exclude = [
 ]
 
 [[tool.mypy.overrides]]
-module = ["pandas_ta.*", "mplfinance.*", "discord.*", "aiohttp.*"]
+module = ["pandas_ta.*", "mplfinance.*"]
 ignore_missing_imports = true

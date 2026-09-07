@@ -64,7 +64,15 @@ venv.bak/
 Thumbs.db
 
 # ══════════════════════════════════════════════
-# LOGS
+# LOGS & TESTS
 # ══════════════════════════════════════════════
 *.log
 logs/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.pytest_cache/
+.ruff_cache/
+backtest_reports/
+
